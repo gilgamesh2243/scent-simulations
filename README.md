@@ -1,352 +1,271 @@
 # Scent Simulation
 
-Interactive geographic odor-field simulation for the area around `9318 SW 43rd Ln` in Gainesville, Florida. The app combines a MapLibre basemap, deck.gl visualization layers, local environment data, live weather sampling, and a browser worker that models scent transport across ground, air, and drainage channels.
+Scent Simulation is an interactive map-based model for exploring how human scent, food attractants, wind, buildings, terrain, vegetation, water flow, and portable scent chambers may interact around a local search area.
 
-This is an exploratory decision-support model, not a forensic instrument or surveyed ground truth. The coefficients are illustrative and should be treated as a way to compare scenarios, station placement, and environmental sensitivity.
+The current scenario is centered near `9318 SW 43rd Ln` in Gainesville, Florida. The app is designed to help people ask better field-planning questions: where might scent hold, where might it disperse, what environmental features could matter, and how chamber placement changes the modeled picture.
 
-## What The App Does
+This is a decision-support and visualization tool. It is not a forensic instrument, a guarantee of scent location, or a substitute for trained field judgment.
 
-- Renders a 3D local map with buildings, roads, canopy, stormwater assets, odor intensity cells, wind vectors, a modeled dog path, and scent chamber stations.
-- Simulates a 24-hour odor field with a controllable clock, playback speed, weather settings, building modes, surface assumptions, and analysis radius.
-- Supports live weather mode using a 3x3 Open-Meteo sample grid around the site, with manual weather controls as fallback.
-- Loads static Gainesville environment data from `public/gainesville-environment.json`.
-- Dynamically refreshes Alachua County building footprints and City of Gainesville stormwater layers when stations extend beyond the static environment envelope.
-- Models each scent chamber as a device twin with output, food attractant, battery, internal climate, contamination risk, service load, event logs, and recommendations.
+## Why This Exists
 
-## Tech Stack
+Search environments are messy. Scent can be affected by wind, temperature, humidity, sunlight, drainage, roads, building edges, vegetation, ground surface, and time. A flat map can show where things are, but it does not help much with how those factors might interact.
 
-- Next.js `16` app router, running through `vinext` for Cloudflare Worker compatibility.
-- React `19` client UI.
-- MapLibre GL for the basemap.
-- deck.gl for map overlays, 3D columns, GeoJSON layers, vectors, paths, and text labels.
-- Turf for radius and chamber-footprint geometry.
-- D3 for the 24-hour signal chart.
-- A dedicated browser Web Worker at `public/odor-worker.js` for the simulation workload.
-- Optional Cloudflare D1/Drizzle plumbing is present but currently unused by the simulation.
+This project gives teams a way to:
 
-## Requirements
+- Compare possible scent movement scenarios.
+- Visualize where scent may be stronger, weaker, uncertain, airborne, ground-held, or drainage-influenced.
+- Test how portable scent chambers might extend or change the search picture.
+- See how weather and environmental changes alter the model over a 24-hour period.
+- Document what data sources and assumptions went into the analysis.
 
-- Node.js `>=22.13.0`
-- A MapTiler API key for the basemap:
+The goal is not to say "the answer is here." The goal is to make assumptions visible, compare options, and support clearer decisions.
 
-```bash
-NEXT_PUBLIC_MAPTILER_KEY=your_key_here
-```
+## What You See On The Map
 
-The app still renders its controls without the key, but the basemap will show an in-app warning.
+The main screen is a 3D map with adjustable model controls. Depending on which layers are turned on, the map can show:
 
-## Commands
+- The last known point or central source location.
+- A selected analysis radius.
+- Roads and nearby structures.
+- Building footprints and building-edge effects.
+- Canopy and vegetation areas.
+- Stormwater inlets, pipes, channels, ponds, and basins.
+- Wind direction and strength across the area.
+- Modeled scent intensity cells.
+- Ground, air, drainage, and uncertainty views.
+- A modeled path showing how a search track might follow stronger signal.
+- Scent chamber stations and their detection footprints.
 
-```bash
-npm install
-npm run dev
-npm run build
-npm test
-npm run lint
-```
+The map is meant to be explored. Changing time, weather, chamber placement, or visible layers can change the interpretation.
 
-- `npm run dev` starts local vinext development.
-- `npm run build` creates the production vinext build.
-- `npm test` runs the build and then verifies the rendered HTML, source markers, worker model markers, and bundled environment data.
-- `npm run lint` runs ESLint while ignoring build output folders.
-- `npm run db:generate` is available for future Drizzle schema work.
+## How To Use It
 
-## Project Structure
+1. Start with the map view.
+   Confirm the center point, radius, and basemap. The default location is the Gainesville scenario built into the project.
 
-```text
-app/
-  layout.tsx             Next metadata, fonts, viewport
-  page.tsx               Main client app, map state, controls, data fetches, deck.gl layers
-  globals.css            Application layout and UI styling
-  chatgpt-auth.ts        Optional Sign in with ChatGPT helpers
+2. Review the environment.
+   Turn buildings, roads, stormwater, canopy, and chamber layers on or off to understand what mapped features are influencing the model.
 
-components/
-  chamber-twin-panel.tsx Device-twin UI for selected scent chamber
+3. Check weather assumptions.
+   Use live weather when available, or switch to manual weather if you want to test a specific wind, rain, humidity, or temperature scenario.
 
-lib/chamber-twin/
-  types.ts               Chamber, weather, log, state, and twin types
-  defaults.ts            Station labels and default custom-chamber creation
-  simulator.ts           Chamber twin calculations, logs, badges, recommendations
+4. Move through time.
+   Use the 24-hour playback bar to see how the modeled field changes throughout the day.
 
-public/
-  odor-worker.js         Browser worker that builds odor fields and metrics
-  gainesville-environment.json
-                         Static local roads, buildings, canopy, and stormwater data
+5. Compare scent views.
+   The combined view gives the broadest picture. Ground, air, drainage, and uncertainty views help explain why the model is showing that picture.
 
-worker/
-  index.ts               Cloudflare Worker entry point for vinext and image optimization
+6. Add or remove chambers.
+   Use chamber placement to test whether portable stations could improve modeled coverage, create stronger signal zones, or add uncertainty.
 
-db/
-  index.ts               Optional D1 getter
-  schema.ts              Empty Drizzle schema placeholder
+7. Read the output panel.
+   The metrics and explanation summarize what the model thinks is driving the current result.
 
-tests/
-  rendered-html.test.mjs Server-render and source/data smoke tests
+## How To Interpret The Main Views
 
-examples/d1/             Optional D1 example routes/schema
-build/                   Local Sites/vite helper plugin
-```
+### Combined
 
-## Runtime Data Flow
+The combined view blends the major scent layers into one practical picture. Use it for a quick overview, then switch to the other views to understand why areas are highlighted.
 
-1. `app/page.tsx` initializes the default site settings, stations, map layers, playback clock, and control panel.
-2. The app fetches `/gainesville-environment.json`, computes its bounds, stores it as static environment data, and sends it to `public/odor-worker.js`.
-3. If the selected radius or chamber layout extends beyond the loaded environment bounds, `fetchExpandedEnvironment()` requests fresh ArcGIS GeoJSON for the needed envelope and sends the merged environment back to the worker.
-4. In live weather mode, `fetchWeatherGrid()` samples Open-Meteo at a 3x3 grid around the current map center.
-5. Each settings or time change posts `{ settings, time, requestId, quick }` to the worker. While playback is running, `quick` mode uses a faster uncertainty proxy.
-6. The worker returns cells, wind vectors, dog path, chamber coverage, signal curve, metrics, weather values, assumptions, and an explanation.
-7. React renders the returned field through deck.gl layers and uses `buildChamberTwins()` to derive device-twin state for the chamber panel.
+### Ground
+
+Ground scent represents modeled scent that is more likely to remain low or held by surfaces. It can increase around stable air, shade, moisture, canopy, and certain ground conditions.
+
+### Air
+
+Airborne scent represents modeled scent that has lifted or dispersed above the ground layer. It is more sensitive to wind speed, heat, impervious surfaces, and building wakes.
+
+### Drainage
+
+Drainage scent represents modeled movement or holding near stormwater structures, low points, channels, ponds, and rain-influenced corridors.
+
+### Uncertainty
+
+Uncertainty highlights areas where the model is less confident. High uncertainty can come from wind shifts, contamination assumptions, fast-changing weather, mixed layers, or sparse environment coverage.
+
+## Scent Chambers
+
+The app includes portable scent chamber stations. These are modeled as controlled scent and food-attractant sources with their own device-like state.
+
+Each chamber can affect the model through:
+
+- Location.
+- Scent strength.
+- Food-attractant strength.
+- Vent height and direction.
+- Leak rate.
+- Age of scent article.
+- Recharge or service interval.
+- Detection radius.
+- Active or inactive state.
+
+The chamber panel shows a "device twin" for the selected chamber. This is a simulated status summary, not a live hardware feed. It estimates:
+
+- Scent output.
+- Food-attractant contribution.
+- Power reserve.
+- Internal temperature and humidity.
+- Detection confidence.
+- Contamination risk.
+- Service load.
+- Environment coverage quality.
+- Recent modeled event log.
+- Suggested action or caution.
 
 ## Data Sources
 
-### Static Environment Bundle
+The model combines bundled local data with live or refreshed external data when available.
 
-`public/gainesville-environment.json` is the bundled starting environment. Current summary:
+### Local Environment Bundle
 
-| Layer | Count |
+The project includes a starting environment file at `public/gainesville-environment.json`. It contains mapped features near the Gainesville scenario:
+
+| Data Layer | Current Count |
 | --- | ---: |
 | Roads | 100 |
-| Buildings | 791 |
+| Building footprints | 791 |
 | Canopy polygons | 4 |
 | Trees | 0 |
 | Stormwater manholes | 169 |
 | Stormwater network structures | 13 |
-| Stormwater end structures | 68 |
+| Stormwater end structures / outfalls | 68 |
 | Stormwater clean outs | 15 |
 | Stormwater drop inlets | 559 |
 | Stormwater basins | 34 |
 | Stormwater gravity mains | 775 |
 | Stormwater open channels | 47 |
 | Stormwater virtual mains | 90 |
-| Stormwater ponds/features | 35 |
+| Stormwater ponds or features | 35 |
 | Stormwater structure polygons | 63 |
 
 Bundle metadata:
 
-- `source`: `OpenStreetMap Overpass API; City of Gainesville StormwaterNetwork_AGO`
-- `generatedAt`: `2026-07-16T22:21:56.397Z`
-- `radiusMeters`: `750`
-- Stormwater `fetchedAt`: `2026-07-16T22:21:52.122Z`
-- Stormwater `queryRadiusMeters`: `1000`
-- City data disclaimer in the JSON: informational, may be missing or inaccurate, and should be used only as modeled drainage influence.
+- Sources: OpenStreetMap Overpass API and City of Gainesville stormwater data.
+- Generated: `2026-07-16T22:21:56.397Z`.
+- Stormwater data fetched: `2026-07-16T22:21:52.122Z`.
+- Starting local environment radius: `750 m`.
+- Stormwater query radius: `1000 m`.
 
-### Dynamic ArcGIS Refreshes
+The city data is informational and may contain missing or inaccurate assets. In this app it is used as modeled environmental influence, not surveyed ground truth.
 
-When the current station layout needs more coverage, the app queries:
+### Dynamic Map Refresh
 
-- Alachua County building footprints:
-  `https://services6.arcgis.com/Do88DoK2xjTUCXd1/arcgis/rest/services/Alachua_County_FL_Buildings/FeatureServer/0/query`
-- City of Gainesville stormwater network:
-  `https://services2.arcgis.com/Zzhtlau4ccHkQgTu/arcgis/rest/services/StormwaterNetwork_AGO/FeatureServer`
+If the selected radius or chamber layout extends beyond the bundled data area, the app attempts to refresh key layers from public ArcGIS services:
 
-The stormwater service is queried by layer id:
+- Alachua County building footprints.
+- City of Gainesville stormwater network.
 
-| Key | Layer id | Modeled kind |
-| --- | ---: | --- |
-| `manholes` | 0 | manhole |
-| `networkStructures` | 1 | network-structure |
-| `endStructures` | 2 | outfall |
-| `cleanOuts` | 3 | cleanout |
-| `dropInlets` | 4 | inlet |
-| `stormBasins` | 5 | basin |
-| `pumps` | 6 | pump |
-| `virtualEnds` | 7 | virtual-end |
-| `gravityMains` | 8 | pipe |
-| `openChannels` | 9 | channel |
-| `virtualMains` | 10 | virtual-pipe |
-| `stormPonds` | 11 | pond |
-| `stormStructures` | 12 | structure polygon |
+The refreshed data is merged with the bundled environment so the model has better local coverage for the current station layout.
 
-Dynamic refreshes use GeoJSON envelope queries with `resultRecordCount=2000`, normalize feature ids/titles/details, merge with static data, and tag the merged environment with `coverageSource: "dynamic-expanded"`.
+### Weather
 
-### Live Weather
+Live weather comes from the Open-Meteo Forecast API. The app samples a 3 by 3 grid around the selected center point and uses:
 
-Live weather uses the Open-Meteo Forecast API:
+- Wind speed.
+- Wind direction.
+- Wind gusts.
+- Temperature.
+- Relative humidity.
+- Precipitation.
 
-- `current`: wind speed, wind direction, wind gusts, temperature, relative humidity, precipitation.
-- `hourly`: the same variables for the 24-hour model.
-- Units: wind speed in `m/s`, temperature in Fahrenheit.
-- Timezone: `America/New_York`.
-- Sampling pattern: 9 points in a 3x3 grid around the selected center.
-- Sample span: `settings.radius * 1.25`, clamped from `350 m` to `1400 m`.
-
-If live weather fails or manual mode is selected, the worker uses the UI sliders as the weather baseline.
+If live weather is unavailable, or if manual mode is selected, the model uses the weather sliders in the app.
 
 ### Basemap
 
-The basemap comes from MapTiler:
+The visual basemap comes from MapTiler. A MapTiler API key is required for satellite or street basemap tiles.
 
-- `satellite`: `https://api.maptiler.com/maps/satellite/style.json`
-- `street`: `https://api.maptiler.com/maps/basic-v2/style.json`
+## What The Model Considers
 
-Both require `NEXT_PUBLIC_MAPTILER_KEY`.
+The simulation uses a local meter grid around the selected center point. It estimates how scent mass moves and changes over time under the selected conditions.
 
-## Data Structures
+It considers:
 
-### `EnvironmentData`
+- Wind direction, speed, and gustiness.
+- Temperature, humidity, rain, and sunlight.
+- Surface type and roughness.
+- Track or scent age.
+- Contamination assumptions.
+- Building obstruction, wake, shade, and edge effects.
+- Roads and impervious surfaces.
+- Canopy and vegetation.
+- Stormwater and low-point drainage influence.
+- Chamber venting, leak rate, scent age, food attractant, and detection radius.
 
-The environment object consumed by both the UI and worker has this shape:
+The model separates scent into ground, air, and drainage components, then combines them into practical map views.
 
-```ts
-type EnvironmentData = {
-  source: string;
-  generatedAt: string;
-  bounds?: { minLon: number; minLat: number; maxLon: number; maxLat: number };
-  coverageSource?: "static" | "dynamic-expanded" | string;
-  radiusMeters: number;
-  roads: FeatureCollection;
-  buildings: FeatureCollection;
-  canopy: FeatureCollection;
-  trees: FeatureCollection;
-  stormwater?: StormwaterData;
-};
+## What The Metrics Mean
+
+- Detect: how strong the modeled signal is compared with the selected source assumptions.
+- Area: how much of the selected radius has meaningful modeled signal.
+- Trail: how continuous the modeled signal is for track-following.
+- Uncertain: how unstable or assumption-sensitive the result is.
+- Ground: share of signal held near the ground layer.
+- Airborne: share of signal lifted or dispersed through air.
+- Drainage: share of signal influenced by rain, low points, and stormwater.
+- Pockets: stronger but uncertain local concentrations.
+
+These metrics are best used for comparison between scenarios, not as absolute measurements.
+
+## What This Is Not
+
+This project does not claim to predict exactly where scent is located. It does not replace:
+
+- Human search planning.
+- Handler judgment.
+- Ground truth observation.
+- Weather station data at the exact site.
+- Official GIS or survey records.
+- Legal, forensic, or emergency-response protocols.
+
+Use it to explore, compare, and communicate assumptions.
+
+## Running The App Locally
+
+Requirements:
+
+- Node.js `>=22.13.0`.
+- A MapTiler API key for the basemap.
+
+Common commands:
+
+```bash
+npm install
+npm run dev
+npm test
 ```
 
-Each `FeatureCollection` contains GeoJSON `Point`, `LineString`, or `Polygon` features with properties such as `id`, `kind`, `title`, `detail`, `highway`, `building`, `surface`, and optional `heightMeters`.
+Set the basemap key in your local environment:
 
-### `StormwaterData`
-
-```ts
-type StormwaterData = {
-  source: string;
-  sourceUrl: string;
-  webMapUrl: string;
-  fetchedAt: string;
-  queryRadiusMeters: number;
-  disclaimer: string;
-  counts?: Record<string, number>;
-  manholes: FeatureCollection;
-  networkStructures: FeatureCollection;
-  endStructures: FeatureCollection;
-  cleanOuts: FeatureCollection;
-  dropInlets: FeatureCollection;
-  stormBasins: FeatureCollection;
-  pumps: FeatureCollection;
-  virtualEnds: FeatureCollection;
-  gravityMains: FeatureCollection;
-  openChannels: FeatureCollection;
-  virtualMains: FeatureCollection;
-  stormPonds: FeatureCollection;
-  stormStructures: FeatureCollection;
-};
+```bash
+NEXT_PUBLIC_MAPTILER_KEY=your_key_here
 ```
 
-### `Settings`
+The app can render controls without the key, but the map tiles will not load correctly.
 
-`Settings` is the main scenario state. It includes:
+## Project Layout
 
-- Map center, radius, and basemap.
-- Weather: wind direction, wind speed, gustiness, temperature, humidity, rain, sunlight, and `weatherSource`.
-- Scenario coefficients: track age, contamination, surface type, stability, canopy, roughness, drainage, source strength, and building mode.
-- `chambers`: an array of scent chamber station objects.
+For readers who need to maintain or audit the project:
 
-### `ScentChamber`
-
-```ts
-type ScentChamber = {
-  id: string;
-  name: string;
-  road: string;
-  lat: number;
-  lon: number;
-  scentStrength: number;
-  foodStrength: number;
-  ventHeight: number;
-  ventDirection: number;
-  leakRate: number;
-  itemAge: number;
-  rechargeHours: number;
-  detectionRadius: number;
-  active: boolean;
-  preset?: "passive-mesh" | "vented-tote" | "food-scent-hybrid";
-  scentArticle?: "clothing" | "blanket" | "toy" | "mixed";
-  foodLevel?: number;
-  batteryCharge?: number;
-  solarExposure?: number;
-  internalHumidityBias?: number;
-  lastServiceHour?: number;
-};
+```text
+app/                     Main user interface, map controls, data loading, and visualization
+components/              Reusable interface pieces, including the chamber twin panel
+lib/chamber-twin/        Chamber state model, recommendations, and event log simulation
+public/                  Static assets, the odor worker, and Gainesville environment data
+worker/                  Cloudflare/vinext server entry point
+db/                      Optional database wiring, currently not used by the simulation
+tests/                   Build, render, source-marker, and environment-data checks
 ```
 
-Defaults currently include Station A on `SW 44th Ave` and Station B on `SW 91st Dr`. Users can place additional chambers on the map.
+The main simulation workload runs in `public/odor-worker.js` so the map interface can stay responsive while scenarios are recalculated.
 
-### Worker Output
+## Current Validation
 
-The worker returns:
+The test suite checks that:
 
-- `cells`: normalized odor cells with `intensity`, `ground`, `air`, `drainage`, `uncertainty`, and dominant `layer`.
-- `vectors`: local wind vectors.
-- `dogPath`: a modeled path following higher signal samples.
-- `obstacles`: nearby drainage features used as wake/channel influences.
-- `chambers`: chamber coverage estimates.
-- `signal`: 24-hour signal curve.
-- `metrics`: detectability, area coverage, continuity, pockets, max signal, uncertainty, ground hold, airborne share, and drainage load.
-- `weather`: weather values used for the current time.
-- `assumptions` and `explanation`: human-readable model context displayed in the Output panel.
-
-## Simulation Model Notes
-
-The worker uses a local meter grid centered on the selected lat/lon. It converts between lon/lat and local meters, builds environment rasters, and simulates odor transport as particle/puff mass over an expanded solver domain.
-
-Important model features:
-
-- The selected radius is the analysis radius, not the full solver boundary.
-- The solver domain expands beyond the selected radius, especially when chambers sit outside the central radius.
-- Ground, air, and drainage are accumulated separately and then normalized into map cells.
-- Building modes change how buildings block, wake, shade, and pool scent:
-  - `normal`
-  - `obstruction`
-  - `wake`
-  - `shade`
-- Road, canopy, impervious, moisture, low-point, building-edge, and stormwater values influence transport and retention.
-- Quick playback mode uses a faster uncertainty proxy. Non-quick solves include a small wind-sensitivity ensemble.
-- Results are cached by settings, environment timestamp, weather grid timestamp, and chamber configuration.
-
-## Chamber Twin Model
-
-The chamber twin code in `lib/chamber-twin/` is separate from the odor-field worker. It derives device-like state from the chamber configuration, current time, weather, field coverage, and environment coverage:
-
-- `battery`
-- `solarInput`
-- `foodLevel`
-- `scentRemaining`
-- `scentOutput`
-- `attractantOutput`
-- `internalTemperature`
-- `internalHumidity`
-- `detectionConfidence`
-- `contaminationRisk`
-- `serviceLoad`
-- `coverage`
-- `coverageStatus`
-
-The panel then shows status, badges, event logs, and a recommendation for the selected chamber.
-
-## Map Layers
-
-The deck.gl overlay includes:
-
-- Analysis radius outline.
-- Canopy polygons and tree points.
-- Extruded building polygons.
-- Roads.
-- Stormwater polygons, lines, and points.
-- Odor field cells.
-- Wind vectors.
-- Modeled dog path.
-- 3D indicators for the last known point and chamber stations.
-- Chamber detection-footprint circles.
-- Station labels.
-
-Layer visibility is controlled from the Map tab.
-
-## Testing
-
-The current tests are smoke and regression checks:
-
-- The vinext server render returns HTML with the expected title and app description.
-- Source files still include the app controls, chamber flow, weather flow, environment refresh flow, worker markers, and key package dependencies.
-- The static environment JSON has enough road, building, canopy, and stormwater data to support the current app assumptions.
+- The app server-renders successfully.
+- The expected scent simulation controls are present.
+- The worker still includes the major modeling paths.
+- The bundled Gainesville environment has enough roads, buildings, canopy, and stormwater data for the current scenario.
 
 Run:
 
@@ -354,17 +273,15 @@ Run:
 npm test
 ```
 
-## Deployment Notes
-
-The project is configured for vinext/Cloudflare Worker style deployment. `worker/index.ts` delegates app handling to `vinext/server/app-router-entry` and supports vinext image optimization.
-
-`.openai/hosting.json` is used by the Sites workflow and `vite.config.ts` reads it to simulate local D1/R2 bindings when present. The simulation itself currently does not require D1 or R2.
-
 ## Known Limitations
 
-- Model coefficients are illustrative and should be validated before operational use.
-- City/county GIS layers can be stale, incomplete, or inaccurate.
-- Live weather is interpolated from a 3x3 sample grid and is not a street-level sensor network.
-- The bundled static environment is centered on the current Gainesville use case.
-- The app is client-heavy; the odor simulation runs in the browser worker.
-- No persistent scenario storage exists yet, despite optional D1 plumbing being available.
+- The coefficients are illustrative and should be validated before operational use.
+- Public GIS layers can be stale, incomplete, or inaccurate.
+- Live weather is interpolated from nearby forecast samples, not from sensors at every point on the map.
+- The current bundled environment is specific to the Gainesville scenario.
+- Chamber device status is simulated, not connected to physical hardware.
+- Scenarios are not yet saved persistently.
+
+## Bottom Line
+
+Scent Simulation is a way to make environmental assumptions visible. It helps people see why a scent picture might change, what mapped features could matter, and how different chamber or weather scenarios compare. Treat the output as a structured conversation with the environment, not a final answer.
