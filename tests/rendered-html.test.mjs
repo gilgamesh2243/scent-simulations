@@ -81,6 +81,8 @@ test("client app contains the forensic-local modeling controls", async () => {
   assert.match(page, /surfaceDeposit/);
   assert.match(page, /reRelease/);
   assert.match(page, /waterSignal/);
+  assert.match(page, /function ControlPanel\(\{[\s\S]*time,[\s\S]*time: number;/);
+  assert.equal((page.match(/time=\{time\}/g) ?? []).length, 4);
   assert.match(page, /Temp/);
   assert.match(page, /Rain/);
   assert.match(page, /Open-Meteo Forecast API/);

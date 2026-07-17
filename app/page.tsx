@@ -975,6 +975,7 @@ function SignalChart({ signal, time }: { signal: SignalPoint[]; time: number }) 
 function ControlPanel({
   settings,
   field,
+  time,
   scentView,
   layerToggles,
   weatherGrid,
@@ -994,6 +995,7 @@ function ControlPanel({
 }: {
   settings: Settings;
   field: FieldResult | null;
+  time: number;
   scentView: ScentView;
   layerToggles: LayerToggles;
   weatherGrid: WeatherGrid | null;
@@ -1329,13 +1331,13 @@ function ControlPanel({
             <Metric label="Area" value={(field?.metrics.coverage ?? 0) * 100} />
             <Metric label="Trail" value={(field?.metrics.continuity ?? 0) * 100} />
             <Metric label="Uncertain" value={(field?.metrics.uncertainty ?? 0) * 100} />
-          <Metric label="Ground" value={(field?.metrics.groundHold ?? 0) * 100} />
-          <Metric label="Airborne" value={(field?.metrics.airborne ?? 0) * 100} />
-          <Metric label="Drainage" value={(field?.metrics.drainageLoad ?? 0) * 100} />
-          <Metric label="Deposited" value={(field?.metrics.surfaceLoad ?? 0) * 100} />
-          <Metric label="Re-release" value={(field?.metrics.reReleaseLoad ?? 0) * 100} />
-          <Metric label="Water" value={(field?.metrics.waterSignal ?? 0) * 100} />
-          <Metric label="Pockets" value={field?.metrics.pockets ?? 0} suffix="" />
+            <Metric label="Ground" value={(field?.metrics.groundHold ?? 0) * 100} />
+            <Metric label="Airborne" value={(field?.metrics.airborne ?? 0) * 100} />
+            <Metric label="Drainage" value={(field?.metrics.drainageLoad ?? 0) * 100} />
+            <Metric label="Deposited" value={(field?.metrics.surfaceLoad ?? 0) * 100} />
+            <Metric label="Re-release" value={(field?.metrics.reReleaseLoad ?? 0) * 100} />
+            <Metric label="Water" value={(field?.metrics.waterSignal ?? 0) * 100} />
+            <Metric label="Pockets" value={field?.metrics.pockets ?? 0} suffix="" />
           </div>
           <p className="explanation">{field?.explanation}</p>
           <div className="assumption-list">
@@ -2175,6 +2177,7 @@ export default function Home() {
         <ControlPanel
           settings={settings}
           field={field}
+          time={time}
           scentView={scentView}
           layerToggles={layerToggles}
           weatherGrid={weatherGrid}
@@ -2219,6 +2222,7 @@ export default function Home() {
         <ControlPanel
           settings={settings}
           field={field}
+          time={time}
           scentView={scentView}
           layerToggles={layerToggles}
           weatherGrid={weatherGrid}
