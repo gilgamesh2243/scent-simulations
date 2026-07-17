@@ -52,17 +52,35 @@ The map is meant to be explored. Changing time, weather, chamber placement, or v
 4. Set the scent age model.
    Choose the source type and distinguish source age, trail age, and plume age. A continuing source, an older finite trail, and an odor parcel traveling away from the source are modeled differently.
 
-5. Move through time.
+5. Try a scenario preset.
+   The Conditions panel includes presets for common planning questions, such as a fresh live trail, an aged trail after a wind shift, post-rain redistribution, a stationary source, a submerged source, and a finite training aid.
+
+6. Move through time.
    Use the 24-hour playback bar to see how the modeled field changes throughout the day.
 
-6. Compare scent views.
+7. Compare scent views.
    The combined view gives the broadest picture. Ground, air, drainage, deposited surface scent, re-release, water, and uncertainty views help explain why the model is showing that picture.
 
-7. Add or remove chambers.
+8. Add or remove chambers.
    Use chamber placement to test whether portable stations could improve modeled coverage, create stronger signal zones, or add uncertainty.
 
-8. Read the output panel.
-   The metrics and explanation summarize what the model thinks is driving the current result.
+9. Read the output panel.
+   The plain-language readout, watch points, metrics, and explanation summarize what the model thinks is driving the current result.
+
+## Built-In Scenario Presets
+
+The presets are shortcuts for field-planning conversations. They do not lock the model; every setting remains editable after a preset is selected.
+
+| Preset | Why It Exists | How To Read It |
+| --- | --- | --- |
+| Fresh live trail | Recent movement with a clearer trail picture. | Start with the strongest corridor, then compare ground and air views. |
+| Aged trail after wind shift | Several hours have passed and scent may no longer align with the walking line. | Expect a wider, patchier, less certain search area. |
+| Post-rain trail | Rain may redistribute scent instead of erasing it. | Compare drainage, surface, and re-release views. |
+| Stationary live source | A person remains in one area and continues producing odor. | Read the map as a continuing source plus downwind plume. |
+| Submerged source | Odor moves through water before reaching air. | Separate underwater transport, surface emergence, and airborne detection. |
+| Training aid | A finite source is used for placement or chamber comparison. | Compare coverage and placement, not human movement. |
+
+The Output panel also includes a plain-language readout. It names the dominant pattern, confidence level, best use, and watch points such as rain redistribution, older-trail patchiness, contamination, and the difference between a canine alert zone and an exact source location.
 
 ## How To Interpret The Main Views
 

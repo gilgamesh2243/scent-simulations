@@ -1012,6 +1012,70 @@ input[type="range"] {
   text-transform: none;
 }
 
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.preset-button {
+  display: grid;
+  gap: 4px;
+  min-height: 76px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfaf5;
+  color: var(--ink);
+  padding: 10px;
+  text-align: left;
+}
+
+.preset-button.active {
+  border-color: rgba(47, 125, 119, 0.78);
+  background: rgba(47, 125, 119, 0.1);
+}
+
+.preset-button strong {
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.preset-button span {
+  color: #4d5c57;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.preset-detail {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.preset-detail div {
+  border-left: 3px solid rgba(47, 125, 119, 0.42);
+  padding-left: 9px;
+}
+
+.preset-detail span,
+.watch-title {
+  color: #245f59;
+  font-size: 10px;
+  font-weight: 820;
+  text-transform: uppercase;
+}
+
+.preset-detail p,
+.watch-list p {
+  margin: 2px 0 0;
+  color: #4d5c57;
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.4;
+}
+
 .range-control {
   display: grid;
   gap: 8px;
@@ -1093,6 +1157,70 @@ input[type="range"] {
   color: #4d5c57;
   font-size: 13px;
   line-height: 1.45;
+}
+
+.readout-summary {
+  margin: 0 0 10px;
+  color: #304943;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.readout-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 11px;
+}
+
+.readout-grid div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfaf5;
+  padding: 9px;
+}
+
+.readout-grid span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.readout-grid strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.watch-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  border: 1px solid rgba(47, 125, 119, 0.18);
+  border-radius: 8px;
+  background: rgba(47, 125, 119, 0.06);
+  padding: 10px;
+}
+
+.watch-list p {
+  position: relative;
+  padding-left: 12px;
+}
+
+.watch-list p::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 5px;
+  height: 5px;
+  border-radius: 99px;
+  background: var(--teal);
 }
 
 .assumption-list {
@@ -1237,6 +1365,15 @@ input[type="range"] {
 
   .metrics-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .preset-grid,
+  .readout-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .preset-button {
+    min-height: 64px;
   }
 
   .weather-readout {

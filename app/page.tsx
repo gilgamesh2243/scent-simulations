@@ -35,6 +35,7 @@ type SourceType = "moving-live" | "stationary-live" | "training-aid" | "animal" 
 type DecompositionStage = "none" | "fresh" | "active" | "advanced";
 type WaterBodyType = "retention-basin" | "pond" | "lake" | "river" | "canal" | "ocean";
 type ControlTab = "map" | "chambers" | "conditions" | "output";
+type ScenarioPresetId = "fresh-live-trail" | "aged-wind-shift" | "post-rain-trail" | "stationary-source" | "submerged-source" | "training-aid";
 
 type LayerToggles = {
   odor: boolean;
@@ -304,6 +305,18 @@ type FieldResult = {
   explanation: string;
 };
 
+type ScenarioPreset = {
+  id: ScenarioPresetId;
+  title: string;
+  short: string;
+  why: string;
+  what: string;
+  how: string;
+  settings: Partial<Settings>;
+  scentView: ScentView;
+  time: number;
+};
+
 const DEFAULTS: Settings = {
   lat: 29.612704,
   lon: -82.442313,
@@ -395,6 +408,175 @@ const DEFAULTS: Settings = {
     },
   ],
 };
+
+const SCENARIO_PRESETS: ScenarioPreset[] = [
+  {
+    id: "fresh-live-trail",
+    title: "Fresh live trail",
+    short: "Recent movement with a usable track picture.",
+    why: "Use this when the person passed through recently and the team expects a clearer ground-to-air gradient.",
+    what: "The trail is young, contamination is lower, and wind history matters less than the current conditions.",
+    how: "Read the strongest corridor first, then compare ground and air views before committing to a narrow line.",
+    scentView: "combined",
+    time: 8.5,
+    settings: {
+      sourceType: "moving-live",
+      decompositionStage: "none",
+      sourceAgeHours: 0.8,
+      trailAgeHours: 0.35,
+      plumeAgeHours: 0.25,
+      trackAge: 0.35,
+      airborneLossRate: 0.22,
+      surfaceDepositionRate: 0.24,
+      chemicalChangeRate: 0.06,
+      rereleaseRate: 0.12,
+      contamination: 0.08,
+      rain: 0.04,
+      humidity: 58,
+      sunlight: 0.42,
+      sourceStrength: 0.78,
+      waterEnabled: false,
+    },
+  },
+  {
+    id: "aged-wind-shift",
+    title: "Aged trail after wind shift",
+    short: "Older trail with a wider, patchier search picture.",
+    why: "Use this when several hours have passed and wind has had time to move scent away from the original walking line.",
+    what: "The model lowers peak strength, widens the corridor, increases uncertainty, and lets deposited odor contribute again.",
+    how: "Do not read the line as exact. Work broader casts, downwind edges, and intermittent pockets.",
+    scentView: "uncertainty",
+    time: 15.25,
+    settings: {
+      sourceType: "moving-live",
+      decompositionStage: "none",
+      sourceAgeHours: 7,
+      trailAgeHours: 5.5,
+      plumeAgeHours: 3.2,
+      trackAge: 5.5,
+      windDir: 214,
+      gustiness: 0.68,
+      airborneLossRate: 0.48,
+      surfaceDepositionRate: 0.58,
+      chemicalChangeRate: 0.24,
+      rereleaseRate: 0.36,
+      contamination: 0.42,
+      stability: 0.34,
+      roughness: 0.52,
+      waterEnabled: false,
+    },
+  },
+  {
+    id: "post-rain-trail",
+    title: "Post-rain trail",
+    short: "Rain redistributes scent instead of simply deleting it.",
+    why: "Use this after rain, wet ground, runoff, or drainage flow could have changed where odor collects.",
+    what: "Airborne signal drops, surface and drainage influence increase, and later warming can re-release deposited odor.",
+    how: "Compare drainage, surface, and re-release views. Low points and runoff paths may matter more than the original line.",
+    scentView: "drainage",
+    time: 11.75,
+    settings: {
+      sourceType: "moving-live",
+      decompositionStage: "none",
+      sourceAgeHours: 6,
+      trailAgeHours: 4,
+      plumeAgeHours: 2.1,
+      trackAge: 4,
+      rain: 0.74,
+      humidity: 88,
+      sunlight: 0.22,
+      drainage: 0.72,
+      airborneLossRate: 0.56,
+      surfaceDepositionRate: 0.68,
+      rereleaseRate: 0.24,
+      contamination: 0.28,
+      waterEnabled: false,
+    },
+  },
+  {
+    id: "stationary-source",
+    title: "Stationary live source",
+    short: "A person remains in one area and keeps replenishing odor.",
+    why: "Use this for waiting, hiding, or sheltering behavior where scent is still being produced at the source.",
+    what: "Source age increases strength near the origin while wind and turbulence shape the plume away from it.",
+    how: "Treat the source as continuing. The strongest alert area may still be displaced downwind.",
+    scentView: "air",
+    time: 18,
+    settings: {
+      sourceType: "stationary-live",
+      decompositionStage: "none",
+      sourceAgeHours: 3,
+      trailAgeHours: 0,
+      plumeAgeHours: 1.2,
+      trackAge: 0,
+      sourceStrength: 0.84,
+      contamination: 0.18,
+      stability: 0.52,
+      airborneLossRate: 0.28,
+      surfaceDepositionRate: 0.38,
+      rereleaseRate: 0.18,
+      waterEnabled: false,
+    },
+  },
+  {
+    id: "submerged-source",
+    title: "Submerged source",
+    short: "Water current first, wind second.",
+    why: "Use this when odor must travel through water before the dog can sample volatile material above the surface.",
+    what: "The model separates underwater transport, surface emergence, and airborne detection downwind from that surface zone.",
+    how: "Never treat the alert zone as the precise underwater source. Read it as a combined current-and-wind pathway.",
+    scentView: "water",
+    time: 13.5,
+    settings: {
+      sourceType: "submerged",
+      decompositionStage: "active",
+      sourceAgeHours: 18,
+      trailAgeHours: 0,
+      plumeAgeHours: 2.8,
+      trackAge: 0,
+      waterEnabled: true,
+      waterBodyType: "retention-basin",
+      waterDepth: 3.8,
+      waterCurrentDir: 126,
+      waterCurrentSpeed: 0.34,
+      verticalMixing: 0.62,
+      waveAction: 0.46,
+      waterTurbulence: 0.58,
+      sourceBuoyancy: 0.72,
+      salinity: 0,
+      airborneLossRate: 0.32,
+      surfaceDepositionRate: 0.28,
+      chemicalChangeRate: 0.34,
+      rereleaseRate: 0.22,
+      contamination: 0.2,
+    },
+  },
+  {
+    id: "training-aid",
+    title: "Training aid",
+    short: "Finite odor source with handling and article-age limits.",
+    why: "Use this to compare chamber or aid placement without implying a living or decomposing source.",
+    what: "The source is finite, older article strength is reduced, and repeated handling can raise contamination.",
+    how: "Use the map to compare placement and coverage, not to infer human movement.",
+    scentView: "combined",
+    time: 16,
+    settings: {
+      sourceType: "training-aid",
+      decompositionStage: "none",
+      sourceAgeHours: 14,
+      trailAgeHours: 0,
+      plumeAgeHours: 1,
+      trackAge: 0,
+      sourceStrength: 0.54,
+      airborneLossRate: 0.36,
+      surfaceDepositionRate: 0.46,
+      chemicalChangeRate: 0.14,
+      rereleaseRate: 0.2,
+      contamination: 0.32,
+      waterEnabled: false,
+    },
+  },
+];
 
 const MAPTILER_KEY = process.env.NEXT_PUBLIC_MAPTILER_KEY ?? "";
 const WORKER_VERSION = "terrain-station-v13";
@@ -972,10 +1154,78 @@ function SignalChart({ signal, time }: { signal: SignalPoint[]; time: number }) 
   );
 }
 
+function primaryPathwayLabel(settings: Settings, field: FieldResult | null) {
+  const metrics = field?.metrics;
+  if (!metrics) return "Waiting for model";
+  if (settings.waterEnabled && metrics.waterSignal > 0.12) return "Water to surface to air";
+  const pathways = [
+    ["Ground-held scent", metrics.groundHold],
+    ["Airborne plume", metrics.airborne],
+    ["Drainage or runoff", metrics.drainageLoad],
+    ["Deposited surface odor", metrics.surfaceLoad],
+    ["Re-release from surfaces", metrics.reReleaseLoad],
+  ] as const;
+  return pathways.reduce((best, current) => (current[1] > best[1] ? current : best), pathways[0])[0];
+}
+
+function confidenceLabel(field: FieldResult | null) {
+  const uncertainty = field?.metrics.uncertainty ?? 1;
+  if (uncertainty < 0.28) return "Higher confidence";
+  if (uncertainty < 0.52) return "Moderate confidence";
+  return "Wide uncertainty";
+}
+
+function useCaseLabel(settings: Settings) {
+  if (settings.sourceType === "submerged" || settings.waterEnabled) return "Plan current and wind checks";
+  if (settings.trailAgeHours >= 4) return "Plan broader casting";
+  if (settings.rain > 0.45) return "Check runoff and low points";
+  if (settings.sourceType === "stationary-live") return "Compare downwind source zones";
+  if (settings.sourceType === "training-aid") return "Compare aid or chamber placement";
+  return "Compare likely search corridors";
+}
+
+function plainLanguageSummary(settings: Settings, field: FieldResult | null, preset: ScenarioPreset | null) {
+  const pattern = primaryPathwayLabel(settings, field).toLowerCase();
+  if (settings.sourceType === "submerged" || settings.waterEnabled) {
+    return `${preset?.title ?? "This scenario"} treats odor as a two-step pathway: material moves underwater first, then volatile odor moves through air from the surface-emergence area. The visible alert zone should be read as displaced by both current and wind.`;
+  }
+  if (settings.trailAgeHours >= 4) {
+    return `${preset?.title ?? "This scenario"} emphasizes that an older trail is broader, patchier, and less exact than the original walking line. The current strongest pattern is ${pattern}, but gaps between pockets may be just as important.`;
+  }
+  if (settings.rain > 0.45) {
+    return `${preset?.title ?? "This scenario"} treats rain as redistribution. Some airborne odor is reduced, while surface, drainage, and later re-release pathways can become more important.`;
+  }
+  if (settings.sourceType === "stationary-live") {
+    return `${preset?.title ?? "This scenario"} treats the source as continuing. Odor is still being replenished, so the map should be read as a source-plus-plume picture rather than a fading trail.`;
+  }
+  return `${preset?.title ?? "This scenario"} compares the strongest modeled scent pathways under the selected conditions. Use the map to compare possibilities, not to mark a single exact location.`;
+}
+
+function watchPoints(settings: Settings, field: FieldResult | null) {
+  const points = [
+    "Canine alert location is not the same thing as exact source location.",
+    "Current wind explains what is moving now; recent weather history helps explain what may already have moved or deposited.",
+  ];
+  if (settings.trailAgeHours >= 2) {
+    points.push("Older trails should be expected to widen, break into pockets, and lose a clean centerline.");
+  }
+  if (settings.rain > 0.3 || (field?.metrics.drainageLoad ?? 0) > 0.18) {
+    points.push("Rain and drainage can move scent into low areas, soil, stormwater paths, or later re-release zones.");
+  }
+  if (settings.waterEnabled) {
+    points.push("For water searches, read underwater transport, surface emergence, and airborne detection as separate zones.");
+  }
+  if ((field?.metrics.uncertainty ?? 0) > 0.5 || settings.contamination > 0.35) {
+    points.push("High uncertainty or contamination means the useful search area may be wider than the strongest color on the map.");
+  }
+  return points.slice(0, 5);
+}
+
 function ControlPanel({
   settings,
   field,
   time,
+  activeScenarioId,
   scentView,
   layerToggles,
   weatherGrid,
@@ -987,6 +1237,7 @@ function ControlPanel({
   chamberTwins,
   selectedChamberId,
   onSettings,
+  onScenarioPreset,
   onStartAddChamber,
   onSelectChamber,
   onRemoveChamber,
@@ -996,6 +1247,7 @@ function ControlPanel({
   settings: Settings;
   field: FieldResult | null;
   time: number;
+  activeScenarioId: ScenarioPresetId | "custom";
   scentView: ScentView;
   layerToggles: LayerToggles;
   weatherGrid: WeatherGrid | null;
@@ -1007,6 +1259,7 @@ function ControlPanel({
   chamberTwins: ChamberTwin[];
   selectedChamberId: string | null;
   onSettings: (patch: Partial<Settings>) => void;
+  onScenarioPreset: (id: ScenarioPresetId) => void;
   onStartAddChamber: () => void;
   onSelectChamber: (id: string) => void;
   onRemoveChamber: (id: string) => void;
@@ -1017,6 +1270,12 @@ function ControlPanel({
   const chamberResultsById = new Map((field?.chambers ?? []).map((chamber) => [chamber.id, chamber]));
   const chamberList = settings.chambers ?? DEFAULTS.chambers;
   const chamberTwinsById = new Map(chamberTwins.map((twin) => [twin.chamber.id, twin]));
+  const activeScenario = SCENARIO_PRESETS.find((preset) => preset.id === activeScenarioId) ?? null;
+  const summary = plainLanguageSummary(settings, field, activeScenario);
+  const pathway = primaryPathwayLabel(settings, field);
+  const confidence = confidenceLabel(field);
+  const useCase = useCaseLabel(settings);
+  const points = watchPoints(settings, field);
 
   return (
     <div className="controls">
@@ -1183,6 +1442,35 @@ function ControlPanel({
         <>
           <section className="control-card">
             <div className="section-title">
+              <Layers size={17} />
+              Scenario presets
+            </div>
+            <div className="preset-grid">
+              {SCENARIO_PRESETS.map((preset) => (
+                <button key={preset.id} className={`preset-button ${activeScenarioId === preset.id ? "active" : ""}`} type="button" onClick={() => onScenarioPreset(preset.id)}>
+                  <strong>{preset.title}</strong>
+                  <span>{preset.short}</span>
+                </button>
+              ))}
+            </div>
+            <div className="preset-detail">
+              <div>
+                <span>Why</span>
+                <p>{activeScenario?.why ?? "Use the sliders below to build a custom field-planning scenario."}</p>
+              </div>
+              <div>
+                <span>What changes</span>
+                <p>{activeScenario?.what ?? "Custom settings keep every source, weather, water, chamber, and layer choice editable."}</p>
+              </div>
+              <div>
+                <span>How to read it</span>
+                <p>{activeScenario?.how ?? "Compare map views and assumptions before treating any single color or corridor as meaningful."}</p>
+              </div>
+            </div>
+          </section>
+
+          <section className="control-card">
+            <div className="section-title">
               <Gauge size={17} />
               Source and age model
             </div>
@@ -1324,6 +1612,28 @@ function ControlPanel({
 
       {controlTab === "output" ? (
         <section className="control-card">
+          <div className="section-title">Plain-language readout</div>
+          <p className="readout-summary">{summary}</p>
+          <div className="readout-grid">
+            <div>
+              <span>Primary pattern</span>
+              <strong>{pathway}</strong>
+            </div>
+            <div>
+              <span>Confidence</span>
+              <strong>{confidence}</strong>
+            </div>
+            <div>
+              <span>Best use</span>
+              <strong>{useCase}</strong>
+            </div>
+          </div>
+          <div className="watch-list">
+            <div className="watch-title">Watch points</div>
+            {points.map((point) => (
+              <p key={point}>{point}</p>
+            ))}
+          </div>
           <div className="section-title">Signal strength</div>
           <SignalChart signal={field?.signal ?? []} time={time} />
           <div className="metrics-grid">
@@ -1437,6 +1747,7 @@ export default function Home() {
   const [weatherGrid, setWeatherGrid] = useState<WeatherGrid | null>(null);
   const [weatherStatus, setWeatherStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [mapReady, setMapReady] = useState(false);
+  const [activeScenarioId, setActiveScenarioId] = useState<ScenarioPresetId | "custom">("custom");
   const [scentView, setScentView] = useState<ScentView>("combined");
   const [addingChamber, setAddingChamber] = useState(false);
   const [selectedChamberId, setSelectedChamberId] = useState<string | null>(DEFAULTS.chambers[0]?.id ?? null);
@@ -1494,6 +1805,22 @@ export default function Home() {
 
   const onSettings = useCallback((patch: Partial<Settings>) => {
     setSettings((current) => ({ ...current, ...patch }));
+    setActiveScenarioId("custom");
+  }, []);
+
+  const applyScenarioPreset = useCallback((id: ScenarioPresetId) => {
+    const preset = SCENARIO_PRESETS.find((candidate) => candidate.id === id);
+    if (!preset) return;
+    setSettings((current) => ({ ...current, ...preset.settings }));
+    setTime(preset.time);
+    setScentView(preset.scentView);
+    setActiveScenarioId(id);
+    setLayerToggles((current) => ({
+      ...current,
+      odor: true,
+      uncertainty: true,
+      water: preset.settings.waterEnabled ?? current.water,
+    }));
   }, []);
 
   const addChamberAt = useCallback((lon: number, lat: number) => {
@@ -1524,6 +1851,7 @@ export default function Home() {
     setPlaying(true);
     setWeatherGrid(null);
     setWeatherStatus("idle");
+    setActiveScenarioId("custom");
     setScentView("combined");
     setAddingChamber(false);
     setSelectedChamberId(DEFAULTS.chambers[0]?.id ?? null);
@@ -2178,6 +2506,7 @@ export default function Home() {
           settings={settings}
           field={field}
           time={time}
+          activeScenarioId={activeScenarioId}
           scentView={scentView}
           layerToggles={layerToggles}
           weatherGrid={weatherGrid}
@@ -2189,6 +2518,7 @@ export default function Home() {
           chamberTwins={chamberTwins}
           selectedChamberId={selectedChamberId}
           onSettings={onSettings}
+          onScenarioPreset={applyScenarioPreset}
           onStartAddChamber={() => setAddingChamber((current) => !current)}
           onSelectChamber={setSelectedChamberId}
           onRemoveChamber={removeChamber}
@@ -2223,6 +2553,7 @@ export default function Home() {
           settings={settings}
           field={field}
           time={time}
+          activeScenarioId={activeScenarioId}
           scentView={scentView}
           layerToggles={layerToggles}
           weatherGrid={weatherGrid}
@@ -2234,6 +2565,7 @@ export default function Home() {
           chamberTwins={chamberTwins}
           selectedChamberId={selectedChamberId}
           onSettings={onSettings}
+          onScenarioPreset={applyScenarioPreset}
           onStartAddChamber={() => setAddingChamber((current) => !current)}
           onSelectChamber={setSelectedChamberId}
           onRemoveChamber={removeChamber}

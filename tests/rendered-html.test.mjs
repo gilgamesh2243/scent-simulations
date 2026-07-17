@@ -71,6 +71,10 @@ test("client app contains the forensic-local modeling controls", async () => {
   assert.match(page, /Building influence/);
   assert.match(page, /stormwater/);
   assert.match(page, /Weather field/);
+  assert.match(page, /Scenario presets/);
+  assert.match(page, /Fresh live trail/);
+  assert.match(page, /Aged trail after wind shift/);
+  assert.match(page, /Submerged source/);
   assert.match(page, /Source and age model/);
   assert.match(page, /Source age/);
   assert.match(page, /Trail age/);
@@ -83,6 +87,10 @@ test("client app contains the forensic-local modeling controls", async () => {
   assert.match(page, /waterSignal/);
   assert.match(page, /function ControlPanel\(\{[\s\S]*time,[\s\S]*time: number;/);
   assert.equal((page.match(/time=\{time\}/g) ?? []).length, 4);
+  assert.match(page, /Plain-language readout/);
+  assert.match(page, /Primary pattern/);
+  assert.match(page, /Watch points/);
+  assert.match(page, /SCENARIO_PRESETS/);
   assert.match(page, /Temp/);
   assert.match(page, /Rain/);
   assert.match(page, /Open-Meteo Forecast API/);
