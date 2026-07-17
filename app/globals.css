@@ -1002,6 +1002,16 @@ input[type="range"] {
   gap: 12px;
 }
 
+.compact-grid {
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.water-toggle {
+  margin-bottom: 10px;
+  text-transform: none;
+}
+
 .range-control {
   display: grid;
   gap: 8px;

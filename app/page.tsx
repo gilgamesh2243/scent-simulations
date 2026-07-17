@@ -28,9 +28,12 @@ import type { ChamberCoverageStatus, ChamberTwin, ScentChamber } from "@/lib/cha
 
 type Basemap = "street" | "satellite";
 type Surface = "grass" | "forest" | "soil" | "pavement" | "mixed";
-type ScentView = "combined" | "ground" | "air" | "drainage" | "uncertainty";
+type ScentView = "combined" | "ground" | "air" | "drainage" | "surface" | "rerelease" | "water" | "uncertainty";
 type BuildingMode = "normal" | "obstruction" | "wake" | "shade";
 type WeatherSource = "live" | "manual";
+type SourceType = "moving-live" | "stationary-live" | "training-aid" | "animal" | "decomposition" | "submerged";
+type DecompositionStage = "none" | "fresh" | "active" | "advanced";
+type WaterBodyType = "retention-basin" | "pond" | "lake" | "river" | "canal" | "ocean";
 type ControlTab = "map" | "chambers" | "conditions" | "output";
 
 type LayerToggles = {
@@ -42,6 +45,7 @@ type LayerToggles = {
   stormwater: boolean;
   canopy: boolean;
   chambers: boolean;
+  water: boolean;
   wind: boolean;
   dogPath: boolean;
 };
@@ -137,6 +141,26 @@ type Settings = {
   rain: number;
   sunlight: number;
   trackAge: number;
+  sourceAgeHours: number;
+  trailAgeHours: number;
+  plumeAgeHours: number;
+  sourceType: SourceType;
+  decompositionStage: DecompositionStage;
+  airborneLossRate: number;
+  surfaceDepositionRate: number;
+  chemicalChangeRate: number;
+  rereleaseRate: number;
+  waterEnabled: boolean;
+  waterBodyType: WaterBodyType;
+  waterDepth: number;
+  waterCurrentDir: number;
+  waterCurrentSpeed: number;
+  verticalMixing: number;
+  waveAction: number;
+  waterTurbulence: number;
+  sourceBuoyancy: number;
+  salinity: number;
+  sourceFixed: boolean;
   contamination: number;
   surface: Surface;
   stability: number;
@@ -181,6 +205,7 @@ type WeatherGrid = {
   fetchedAt: string;
   center: { lat: number; lon: number };
   sampleRadiusMeters: number;
+  historyHours: number;
   samples: WeatherSample[];
 };
 
@@ -192,8 +217,13 @@ type Cell = {
   ground: number;
   air: number;
   drainage: number;
+  surfaceDeposit: number;
+  reRelease: number;
+  plumeAge: number;
+  detectionProbability: number;
+  waterSignal: number;
   outsideRadius?: boolean;
-  layer: "ground" | "air" | "drainage";
+  layer: "ground" | "air" | "drainage" | "surface" | "water";
 };
 
 type Vector = {
@@ -211,6 +241,14 @@ type Obstacle = {
 
 type ChamberResult = ScentChamber & {
   coverage: number;
+};
+
+type WaterScentZone = {
+  lon: number;
+  lat: number;
+  intensity: number;
+  uncertainty: number;
+  stage: "underwater" | "surface" | "airborne";
 };
 
 type MapIndicator = {
@@ -247,6 +285,9 @@ type FieldResult = {
     groundHold: number;
     airborne: number;
     drainageLoad: number;
+    surfaceLoad: number;
+    reReleaseLoad: number;
+    waterSignal: number;
   };
   weather: {
     windDir: number;
@@ -258,6 +299,7 @@ type FieldResult = {
     source?: string;
     sampleCount?: number;
   };
+  waterZones: WaterScentZone[];
   assumptions: string[];
   explanation: string;
 };
@@ -275,6 +317,26 @@ const DEFAULTS: Settings = {
   rain: 0.12,
   sunlight: 0.55,
   trackAge: 5,
+  sourceAgeHours: 5,
+  trailAgeHours: 3,
+  plumeAgeHours: 1.4,
+  sourceType: "moving-live",
+  decompositionStage: "none",
+  airborneLossRate: 0.34,
+  surfaceDepositionRate: 0.42,
+  chemicalChangeRate: 0.18,
+  rereleaseRate: 0.28,
+  waterEnabled: false,
+  waterBodyType: "retention-basin",
+  waterDepth: 2.4,
+  waterCurrentDir: 118,
+  waterCurrentSpeed: 0.18,
+  verticalMixing: 0.42,
+  waveAction: 0.28,
+  waterTurbulence: 0.36,
+  sourceBuoyancy: 0.5,
+  salinity: 0,
+  sourceFixed: true,
   contamination: 0.18,
   surface: "mixed",
   stability: 0.46,
@@ -667,6 +729,8 @@ function numericSeries(values: unknown): number[] {
 
 async function fetchWeatherGrid(settings: Settings, signal?: AbortSignal): Promise<WeatherGrid> {
   const samples = weatherSamplePoints(settings);
+  const historyHours = Math.max(settings.sourceAgeHours, settings.trailAgeHours, settings.plumeAgeHours, settings.trackAge);
+  const pastDays = String(clamp(Math.ceil((historyHours + 6) / 24), 1, 7));
   const params = new URLSearchParams({
     latitude: samples.map((point) => point.lat.toFixed(6)).join(","),
     longitude: samples.map((point) => point.lon.toFixed(6)).join(","),
@@ -675,7 +739,8 @@ async function fetchWeatherGrid(settings: Settings, signal?: AbortSignal): Promi
     wind_speed_unit: "ms",
     temperature_unit: "fahrenheit",
     timezone: "America/New_York",
-    forecast_days: "1",
+    past_days: pastDays,
+    forecast_days: "2",
   });
   const sourceUrl = `https://api.open-meteo.com/v1/forecast?${params}`;
   const response = await fetch(sourceUrl, { signal });
@@ -688,6 +753,7 @@ async function fetchWeatherGrid(settings: Settings, signal?: AbortSignal): Promi
     fetchedAt: new Date().toISOString(),
     center: { lat: settings.lat, lon: settings.lon },
     sampleRadiusMeters: clamp(settings.radius * 1.25, 350, 1400),
+    historyHours,
     samples: rows.map((row, index) => ({
       id: samples[index]?.id ?? `sample-${index}`,
       lat: samples[index]?.lat ?? Number(row.latitude),
@@ -755,6 +821,9 @@ function scentValue(cell: Cell, view: ScentView) {
   if (view === "ground") return finiteLayerValue(cell.ground, cell.layer === "ground" ? intensity : 0);
   if (view === "air") return finiteLayerValue(cell.air, cell.layer === "air" ? intensity : 0);
   if (view === "drainage") return finiteLayerValue(cell.drainage, cell.layer === "drainage" ? intensity : 0);
+  if (view === "surface") return finiteLayerValue(cell.surfaceDeposit, cell.layer === "surface" ? intensity : 0);
+  if (view === "rerelease") return finiteLayerValue(cell.reRelease);
+  if (view === "water") return finiteLayerValue(cell.waterSignal, cell.layer === "water" ? intensity : 0);
   if (view === "uncertainty") return finiteLayerValue(cell.uncertainty) * clamp(intensity * 1.25, 0, 1);
   return intensity;
 }
@@ -763,6 +832,8 @@ function scentThreshold(view: ScentView, radius: number) {
   const radiusScale = radius >= 1000 ? 0.28 : radius >= 750 ? 0.58 : 1;
   if (view === "uncertainty") return 0.12 * radiusScale;
   if (view === "drainage") return 0.018 * radiusScale;
+  if (view === "surface" || view === "rerelease") return 0.02 * radiusScale;
+  if (view === "water") return 0.016 * radiusScale;
   return 0.025 * radiusScale;
 }
 
@@ -783,6 +854,9 @@ function scentColor(cell: Cell, view: ScentView): [number, number, number, numbe
     return [r, g, b, Math.round(Math.max(54, a - 38) * fade)];
   }
   if (view === "drainage") return [43, 126, 170, Math.round(Math.max(72, Math.round(80 + scentValue(cell, view) * 130)) * fade)];
+  if (view === "surface") return [99, 128, 83, Math.round(Math.max(58, 78 + scentValue(cell, view) * 122) * fade)];
+  if (view === "rerelease") return [166, 103, 68, Math.round(Math.max(62, 86 + scentValue(cell, view) * 118) * fade)];
+  if (view === "water") return [31, 114, 181, Math.round(Math.max(68, 84 + scentValue(cell, view) * 135) * fade)];
   const [r, g, b, a] = layerColor(cell);
   return [r, g, b, Math.round(a * fade)];
 }
@@ -998,9 +1072,9 @@ function ControlPanel({
               Analysis layers
             </div>
             <div className="mode-grid">
-              {(["combined", "ground", "air", "drainage", "uncertainty"] as ScentView[]).map((view) => (
+              {(["combined", "ground", "air", "drainage", "surface", "rerelease", "water", "uncertainty"] as ScentView[]).map((view) => (
                 <button key={view} className={scentView === view ? "active" : ""} type="button" onClick={() => onScentView(view)}>
-                  {view}
+                  {view === "rerelease" ? "re-release" : view}
                 </button>
               ))}
             </div>
@@ -1107,6 +1181,45 @@ function ControlPanel({
         <>
           <section className="control-card">
             <div className="section-title">
+              <Gauge size={17} />
+              Source and age model
+            </div>
+            <div className="choice-row">
+              {(["moving-live", "stationary-live", "training-aid"] as SourceType[]).map((sourceType) => (
+                <button key={sourceType} className={settings.sourceType === sourceType ? "active" : ""} type="button" onClick={() => onSettings({ sourceType })}>
+                  {sourceType.replace("-", " ")}
+                </button>
+              ))}
+            </div>
+            <div className="choice-row">
+              {(["animal", "decomposition", "submerged"] as SourceType[]).map((sourceType) => (
+                <button key={sourceType} className={settings.sourceType === sourceType ? "active" : ""} type="button" onClick={() => onSettings({ sourceType, waterEnabled: sourceType === "submerged" ? true : settings.waterEnabled })}>
+                  {sourceType}
+                </button>
+              ))}
+            </div>
+            <div className="control-grid compact-grid">
+              <RangeControl label="Source age" value={settings.sourceAgeHours} min={0} max={72} step={0.5} suffix=" h" icon={<Gauge size={16} />} onChange={(sourceAgeHours) => onSettings({ sourceAgeHours, trackAge: sourceAgeHours })} />
+              <RangeControl label="Trail age" value={settings.trailAgeHours} min={0} max={48} step={0.5} suffix=" h" icon={<MapPin size={16} />} onChange={(trailAgeHours) => onSettings({ trailAgeHours })} />
+              <RangeControl label="Plume age" value={settings.plumeAgeHours} min={0.1} max={12} step={0.1} suffix=" h" icon={<Wind size={16} />} onChange={(plumeAgeHours) => onSettings({ plumeAgeHours })} />
+              <RangeControl label="Air loss" value={settings.airborneLossRate} min={0.05} max={0.85} step={0.01} icon={<Wind size={16} />} onChange={(airborneLossRate) => onSettings({ airborneLossRate })} />
+              <RangeControl label="Deposition" value={settings.surfaceDepositionRate} min={0.05} max={0.85} step={0.01} icon={<Layers size={16} />} onChange={(surfaceDepositionRate) => onSettings({ surfaceDepositionRate })} />
+              <RangeControl label="Re-release" value={settings.rereleaseRate} min={0} max={0.75} step={0.01} icon={<ThermometerSun size={16} />} onChange={(rereleaseRate) => onSettings({ rereleaseRate })} />
+              <RangeControl label="Chemical change" value={settings.chemicalChangeRate} min={0} max={0.75} step={0.01} icon={<Droplets size={16} />} onChange={(chemicalChangeRate) => onSettings({ chemicalChangeRate })} />
+              <label className="select-control">
+                <span>Decomposition stage</span>
+                <select value={settings.decompositionStage} onChange={(event) => onSettings({ decompositionStage: event.target.value as DecompositionStage })}>
+                  <option value="none">none</option>
+                  <option value="fresh">fresh</option>
+                  <option value="active">active</option>
+                  <option value="advanced">advanced</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section className="control-card">
+            <div className="section-title">
               <Wind size={17} />
               Weather field
             </div>
@@ -1120,7 +1233,7 @@ function ControlPanel({
             <p className="microcopy">
               {settings.weatherSource === "live"
                 ? weatherStatus === "ready"
-                  ? `${weatherGrid?.source ?? "Weather model"}: ${weatherGrid?.samples.length ?? 0} local samples over ${Math.round(weatherGrid?.sampleRadiusMeters ?? 0)} m.`
+                  ? `${weatherGrid?.source ?? "Weather model"}: ${weatherGrid?.samples.length ?? 0} local samples over ${Math.round(weatherGrid?.sampleRadiusMeters ?? 0)} m, ${Math.round(weatherGrid?.historyHours ?? 0)} h history window.`
                   : weatherStatus === "loading"
                     ? "Fetching local wind, gust, temperature, humidity, and precipitation samples."
                     : "Live weather unavailable; the model falls back to manual sliders."
@@ -1172,6 +1285,38 @@ function ControlPanel({
               </select>
             </label>
           </section>
+
+          <section className="control-card">
+            <div className="section-title">
+              <CloudRain size={17} />
+              Water pathway
+            </div>
+            <label className="toggle-row water-toggle">
+              <input type="checkbox" checked={settings.waterEnabled} onChange={() => onSettings({ waterEnabled: !settings.waterEnabled })} />
+              <span>Model underwater transport, surface emergence, and airborne detection zone</span>
+            </label>
+            <div className="control-grid compact-grid">
+              <label className="select-control">
+                <span>Water body</span>
+                <select value={settings.waterBodyType} onChange={(event) => onSettings({ waterBodyType: event.target.value as WaterBodyType })}>
+                  <option value="retention-basin">retention basin</option>
+                  <option value="pond">pond</option>
+                  <option value="lake">lake</option>
+                  <option value="river">river</option>
+                  <option value="canal">canal</option>
+                  <option value="ocean">ocean</option>
+                </select>
+              </label>
+              <RangeControl label="Source depth" value={settings.waterDepth} min={0.2} max={30} step={0.1} suffix=" m" icon={<Droplets size={16} />} onChange={(waterDepth) => onSettings({ waterDepth })} />
+              <RangeControl label="Current bearing" value={settings.waterCurrentDir} min={0} max={359} step={1} suffix="deg" icon={<Wind size={16} />} onChange={(waterCurrentDir) => onSettings({ waterCurrentDir })} />
+              <RangeControl label="Current speed" value={settings.waterCurrentSpeed} min={0} max={2.5} step={0.01} suffix=" m/s" icon={<Gauge size={16} />} onChange={(waterCurrentSpeed) => onSettings({ waterCurrentSpeed })} />
+              <RangeControl label="Vertical mixing" value={settings.verticalMixing} min={0} max={1} step={0.01} icon={<Layers size={16} />} onChange={(verticalMixing) => onSettings({ verticalMixing })} />
+              <RangeControl label="Wave action" value={settings.waveAction} min={0} max={1} step={0.01} icon={<CloudRain size={16} />} onChange={(waveAction) => onSettings({ waveAction })} />
+              <RangeControl label="Water turbulence" value={settings.waterTurbulence} min={0} max={1} step={0.01} icon={<Wind size={16} />} onChange={(waterTurbulence) => onSettings({ waterTurbulence })} />
+              <RangeControl label="Buoyancy" value={settings.sourceBuoyancy} min={0} max={1} step={0.01} icon={<ThermometerSun size={16} />} onChange={(sourceBuoyancy) => onSettings({ sourceBuoyancy })} />
+              <RangeControl label="Salinity" value={settings.salinity} min={0} max={1} step={0.01} icon={<Droplets size={16} />} onChange={(salinity) => onSettings({ salinity })} />
+            </div>
+          </section>
         </>
       ) : null}
 
@@ -1184,10 +1329,13 @@ function ControlPanel({
             <Metric label="Area" value={(field?.metrics.coverage ?? 0) * 100} />
             <Metric label="Trail" value={(field?.metrics.continuity ?? 0) * 100} />
             <Metric label="Uncertain" value={(field?.metrics.uncertainty ?? 0) * 100} />
-            <Metric label="Ground" value={(field?.metrics.groundHold ?? 0) * 100} />
-            <Metric label="Airborne" value={(field?.metrics.airborne ?? 0) * 100} />
-            <Metric label="Drainage" value={(field?.metrics.drainageLoad ?? 0) * 100} />
-            <Metric label="Pockets" value={field?.metrics.pockets ?? 0} suffix="" />
+          <Metric label="Ground" value={(field?.metrics.groundHold ?? 0) * 100} />
+          <Metric label="Airborne" value={(field?.metrics.airborne ?? 0) * 100} />
+          <Metric label="Drainage" value={(field?.metrics.drainageLoad ?? 0) * 100} />
+          <Metric label="Deposited" value={(field?.metrics.surfaceLoad ?? 0) * 100} />
+          <Metric label="Re-release" value={(field?.metrics.reReleaseLoad ?? 0) * 100} />
+          <Metric label="Water" value={(field?.metrics.waterSignal ?? 0) * 100} />
+          <Metric label="Pockets" value={field?.metrics.pockets ?? 0} suffix="" />
           </div>
           <p className="explanation">{field?.explanation}</p>
           <div className="assumption-list">
@@ -1286,6 +1434,7 @@ export default function Home() {
   const [environmentMessage, setEnvironmentMessage] = useState("");
   const [weatherGrid, setWeatherGrid] = useState<WeatherGrid | null>(null);
   const [weatherStatus, setWeatherStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [mapReady, setMapReady] = useState(false);
   const [scentView, setScentView] = useState<ScentView>("combined");
   const [addingChamber, setAddingChamber] = useState(false);
   const [selectedChamberId, setSelectedChamberId] = useState<string | null>(DEFAULTS.chambers[0]?.id ?? null);
@@ -1298,6 +1447,7 @@ export default function Home() {
     stormwater: true,
     canopy: true,
     chambers: true,
+    water: true,
     wind: true,
     dogPath: true,
   });
@@ -1384,6 +1534,7 @@ export default function Home() {
       stormwater: true,
       canopy: true,
       chambers: true,
+      water: true,
       wind: true,
       dogPath: true,
     });
@@ -1420,7 +1571,7 @@ export default function Home() {
         setWeatherStatus("error");
       });
     return () => controller.abort();
-  }, [settings.lat, settings.lon, settings.radius, settings.weatherSource]);
+  }, [settings]);
 
   useEffect(() => {
     const worker = new Worker(`/odor-worker.js?v=${WORKER_VERSION}`);
@@ -1498,10 +1649,7 @@ export default function Home() {
     return () => controller.abort();
   }, [
     environmentCoverage.needsRefresh,
-    environmentCoverage.requiredBounds.maxLat,
-    environmentCoverage.requiredBounds.maxLon,
-    environmentCoverage.requiredBounds.minLat,
-    environmentCoverage.requiredBounds.minLon,
+    environmentCoverage.requiredBounds,
     settings,
     activeChambers,
   ]);
@@ -1538,8 +1686,10 @@ export default function Home() {
     map.addControl(overlay as unknown as maplibregl.IControl);
     mapRef.current = map;
     overlayRef.current = overlay;
+    map.once("load", () => setMapReady(true));
 
     return () => {
+      setMapReady(false);
       overlay.finalize();
       map.remove();
       overlayRef.current = null;
@@ -1548,8 +1698,15 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!mapRef.current || !MAPTILER_KEY) return;
-    mapRef.current.setStyle(styleUrl(settings.basemap));
+    const map = mapRef.current;
+    if (!map || !MAPTILER_KEY) return;
+    setMapReady(false);
+    const handleIdle = () => setMapReady(true);
+    map.once("idle", handleIdle);
+    map.setStyle(styleUrl(settings.basemap));
+    return () => {
+      map.off("idle", handleIdle);
+    };
   }, [settings.basemap]);
 
   useEffect(() => {
@@ -1686,10 +1843,10 @@ export default function Home() {
   }, [activeChambers, chamberTwins, field?.chambers, settings.lat, settings.lon, settings.radius]);
 
   useEffect(() => {
-    if (!overlayRef.current || !field) return;
+    if (!overlayRef.current || !field || !mapReady) return;
     const cellRadius = clamp(settings.radius / 42, 5, 24);
     overlayRef.current.setProps({
-      getTooltip: ({ object }: { object?: Partial<Cell & MapIndicator> & { properties?: { title?: string; detail?: string } } }) => {
+      getTooltip: ({ object }: { object?: Partial<Cell & MapIndicator & WaterScentZone> & { properties?: { title?: string; detail?: string } } }) => {
         if (!object) return null;
         if (object.properties?.title) {
           return {
@@ -1703,11 +1860,20 @@ export default function Home() {
             style: { backgroundColor: "rgba(23, 37, 45, 0.94)", borderRadius: "8px", color: "#fff", padding: "10px 12px" },
           };
         }
+        if ("stage" in object && object.stage) {
+          return {
+            html: tooltipHtml(
+              `${object.stage} water scent zone`,
+              `Signal ${Math.round((object.intensity ?? 0) * 100)}%, uncertainty ${Math.round((object.uncertainty ?? 0) * 100)}%. A canine alert may be displaced from the underwater source by both water movement and wind.`,
+            ),
+            style: { backgroundColor: "rgba(23, 37, 45, 0.94)", borderRadius: "8px", color: "#fff", padding: "10px 12px" },
+          };
+        }
         if ("intensity" in object && object.intensity !== undefined) {
           return {
             html: tooltipHtml(
               `${object.layer ?? "odor"} scent cell`,
-              `Intensity ${Math.round(object.intensity * 100)}%, ground ${Math.round((object.ground ?? 0) * 100)}%, air ${Math.round((object.air ?? 0) * 100)}%, drainage ${Math.round((object.drainage ?? 0) * 100)}%, uncertainty ${Math.round((object.uncertainty ?? 0) * 100)}%.${object.outsideRadius ? " Outside the selected analysis radius; shown as solver spillover." : ""}`,
+              `Intensity ${Math.round(object.intensity * 100)}%, ground ${Math.round((object.ground ?? 0) * 100)}%, air ${Math.round((object.air ?? 0) * 100)}%, drainage ${Math.round((object.drainage ?? 0) * 100)}%, deposited ${Math.round((object.surfaceDeposit ?? 0) * 100)}%, re-release ${Math.round((object.reRelease ?? 0) * 100)}%, water ${Math.round((object.waterSignal ?? 0) * 100)}%, uncertainty ${Math.round((object.uncertainty ?? 0) * 100)}%.${object.outsideRadius ? " Outside the selected analysis radius; shown as solver spillover." : ""}`,
             ),
             style: { backgroundColor: "rgba(23, 37, 45, 0.94)", borderRadius: "8px", color: "#fff", padding: "10px 12px" },
           };
@@ -1846,6 +2012,24 @@ export default function Home() {
           stroked: false,
           parameters: { depthTest: false },
         }),
+        new ScatterplotLayer<WaterScentZone>({
+          id: "water-scent-zones",
+          data: layerToggles.water && (settings.waterEnabled || settings.sourceType === "submerged") ? field.waterZones : [],
+          getPosition: (zone) => [zone.lon, zone.lat],
+          getRadius: (zone) => (zone.stage === "underwater" ? 14 : zone.stage === "surface" ? 20 : 24) * (0.6 + zone.intensity),
+          radiusUnits: "meters",
+          getFillColor: (zone) =>
+            zone.stage === "underwater"
+              ? [21, 77, 135, 150]
+              : zone.stage === "surface"
+                ? [43, 126, 170, 178]
+                : [63, 136, 216, 126],
+          stroked: true,
+          getLineColor: (zone) => (zone.stage === "surface" ? [255, 255, 255, 190] : [20, 48, 76, 175]),
+          lineWidthMinPixels: 1,
+          pickable: true,
+          parameters: { depthTest: false },
+        }),
         new GeoJsonLayer<GeoJsonFeature>({
           id: "mapped-building-outlines",
           data: layerToggles.buildings ? environment?.buildings ?? { type: "FeatureCollection", features: [] } : { type: "FeatureCollection", features: [] },
@@ -1948,7 +2132,7 @@ export default function Home() {
         }),
       ],
     });
-  }, [activeChambers, chamberCoverage, chamberIds, environment, field, indicators, layerToggles, radiusFeature, scentView, settings.lat, settings.lon, settings.radius, stormwaterLines, stormwaterPoints, stormwaterPolygons]);
+  }, [activeChambers, chamberCoverage, chamberIds, environment, field, indicators, layerToggles, mapReady, radiusFeature, scentView, settings.lat, settings.lon, settings.radius, settings.sourceType, settings.waterEnabled, stormwaterLines, stormwaterPoints, stormwaterPolygons]);
 
   const sheetStyle = { transform: sheetOpen ? "translateY(0)" : "translateY(calc(100% - 156px))" };
 

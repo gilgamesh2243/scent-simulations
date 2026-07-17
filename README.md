@@ -49,16 +49,19 @@ The map is meant to be explored. Changing time, weather, chamber placement, or v
 3. Check weather assumptions.
    Use live weather when available, or switch to manual weather if you want to test a specific wind, rain, humidity, or temperature scenario.
 
-4. Move through time.
+4. Set the scent age model.
+   Choose the source type and distinguish source age, trail age, and plume age. A continuing source, an older finite trail, and an odor parcel traveling away from the source are modeled differently.
+
+5. Move through time.
    Use the 24-hour playback bar to see how the modeled field changes throughout the day.
 
-5. Compare scent views.
-   The combined view gives the broadest picture. Ground, air, drainage, and uncertainty views help explain why the model is showing that picture.
+6. Compare scent views.
+   The combined view gives the broadest picture. Ground, air, drainage, deposited surface scent, re-release, water, and uncertainty views help explain why the model is showing that picture.
 
-6. Add or remove chambers.
+7. Add or remove chambers.
    Use chamber placement to test whether portable stations could improve modeled coverage, create stronger signal zones, or add uncertainty.
 
-7. Read the output panel.
+8. Read the output panel.
    The metrics and explanation summarize what the model thinks is driving the current result.
 
 ## How To Interpret The Main Views
@@ -78,6 +81,14 @@ Airborne scent represents modeled scent that has lifted or dispersed above the g
 ### Drainage
 
 Drainage scent represents modeled movement or holding near stormwater structures, low points, channels, ponds, and rain-influenced corridors.
+
+### Surface And Re-Release
+
+Surface scent represents odor that has deposited onto soil, vegetation, pavement, or objects. Re-release represents deposited odor becoming airborne again when warming, drying, airflow, wave action, or moisture changes make that plausible.
+
+### Water
+
+Water scent appears when submerged-source modeling is enabled. The map separates underwater transport, surface emergence, and airborne detection. A canine alert in this view should not be read as the precise underwater source location.
 
 ### Uncertainty
 
@@ -168,7 +179,7 @@ Live weather comes from the Open-Meteo Forecast API. The app samples a 3 by 3 gr
 - Relative humidity.
 - Precipitation.
 
-If live weather is unavailable, or if manual mode is selected, the model uses the weather sliders in the app.
+The app requests enough recent hourly weather history to cover the selected source, trail, and plume age window. If live weather is unavailable, or if manual mode is selected, the model uses the weather sliders in the app.
 
 ### Basemap
 
@@ -180,18 +191,25 @@ The simulation uses a local meter grid around the selected center point. It esti
 
 It considers:
 
+- Source type: moving live person, stationary live person, finite training aid, animal, decomposition source, or submerged source.
+- Source age: how long a continuing source has been producing odor.
+- Trail age: how long ago a moving source passed through a location.
+- Plume age: how long an odor parcel has been traveling away from its source.
 - Wind direction, speed, and gustiness.
 - Temperature, humidity, rain, and sunlight.
+- Recent weather history across the selected age window.
 - Surface type and roughness.
 - Track or scent age.
 - Contamination assumptions.
 - Building obstruction, wake, shade, and edge effects.
 - Roads and impervious surfaces.
 - Canopy and vegetation.
+- Surface deposition and later re-release.
 - Stormwater and low-point drainage influence.
+- Underwater current, depth, mixing, wave action, turbulence, buoyancy, salinity, and surface-to-air transfer when water modeling is enabled.
 - Chamber venting, leak rate, scent age, food attractant, and detection radius.
 
-The model separates scent into ground, air, and drainage components, then combines them into practical map views.
+The model separates scent into ground, air, drainage, deposited surface, re-release, and water-related components, then combines them into practical map views.
 
 ## What The Metrics Mean
 
@@ -202,6 +220,9 @@ The model separates scent into ground, air, and drainage components, then combin
 - Ground: share of signal held near the ground layer.
 - Airborne: share of signal lifted or dispersed through air.
 - Drainage: share of signal influenced by rain, low points, and stormwater.
+- Deposited: share of signal held on surfaces.
+- Re-release: share of previously deposited odor modeled as becoming airborne again.
+- Water: share of signal tied to the underwater-to-surface-to-air pathway.
 - Pockets: stronger but uncertain local concentrations.
 
 These metrics are best used for comparison between scenarios, not as absolute measurements.
@@ -280,6 +301,7 @@ npm test
 - Live weather is interpolated from nearby forecast samples, not from sensors at every point on the map.
 - The current bundled environment is specific to the Gainesville scenario.
 - Chamber device status is simulated, not connected to physical hardware.
+- The water model is a simplified planning model, not a hydrodynamic survey.
 - Scenarios are not yet saved persistently.
 
 ## Bottom Line

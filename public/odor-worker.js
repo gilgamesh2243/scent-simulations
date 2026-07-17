@@ -486,6 +486,103 @@ function surfaceRetention(surface) {
   return 1;
 }
 
+function sourceTypeProfile(settings) {
+  const type = settings.sourceType ?? "moving-live";
+  const decompositionStage = settings.decompositionStage ?? "none";
+  const profiles = {
+    "moving-live": { continuous: false, trail: 1.12, source: 0.84, patch: 0.54, chemical: 0.16 },
+    "stationary-live": { continuous: true, trail: 0.28, source: 1.08, patch: 0.22, chemical: 0.1 },
+    "training-aid": { continuous: false, trail: 0.48, source: 0.92, patch: 0.38, chemical: 0.14 },
+    animal: { continuous: false, trail: 0.92, source: 0.88, patch: 0.48, chemical: 0.16 },
+    decomposition: { continuous: true, trail: 0.18, source: 1.02, patch: 0.34, chemical: 0.42 },
+    submerged: { continuous: true, trail: 0.08, source: 0.82, patch: 0.46, chemical: 0.34 },
+  };
+  const profile = profiles[type] ?? profiles["moving-live"];
+  const stageBoost =
+    decompositionStage === "fresh" ? 0.86 : decompositionStage === "active" ? 1.18 : decompositionStage === "advanced" ? 0.98 : 1;
+  return { ...profile, source: profile.source * (type === "decomposition" ? stageBoost : 1) };
+}
+
+function ageProfile(settings, releaseAgeHours, weather, localEnvironment = null) {
+  const profile = sourceTypeProfile(settings);
+  const sourceAge = Math.max(0, settings.sourceAgeHours ?? settings.trackAge ?? 0);
+  const trailAge = Math.max(0, settings.trailAgeHours ?? settings.trackAge ?? 0);
+  const plumeAge = Math.max(0.1, settings.plumeAgeHours ?? Math.min(sourceAge, 3));
+  const airLoss = clamp(settings.airborneLossRate ?? 0.34, 0.02, 0.95);
+  const depositionRate = clamp(settings.surfaceDepositionRate ?? 0.42, 0.02, 0.95);
+  const chemicalRate = clamp((settings.chemicalChangeRate ?? 0.18) + profile.chemical * 0.22, 0, 0.95);
+  const rereleaseRate = clamp(settings.rereleaseRate ?? 0.28, 0, 0.95);
+  const rain = clamp(weather?.rain ?? settings.rain ?? 0, 0, 1);
+  const heat = clamp(((weather?.temperature ?? settings.temperature ?? 68) - 55) / 45, 0, 1);
+  const humidity = clamp((weather?.humidity ?? settings.humidity ?? 60) / 100, 0, 1);
+  const solar = clamp(settings.sunlight ?? 0.5, 0, 1);
+  const surfaceHold = clamp(localEnvironment?.surfaceHold ?? 1, 0.04, 1.9);
+  const moisture = clamp(localEnvironment?.moisture ?? 0, 0, 1);
+  const sourceContinuity = profile.continuous ? clamp(0.46 + sourceAge / 18, 0.46, 1.28) : Math.exp(-sourceAge * airLoss / 26);
+  const trailRetention = Math.exp(-trailAge * (0.055 + airLoss * 0.045 + chemicalRate * 0.035)) * (0.7 + surfaceHold * 0.28 + moisture * 0.16);
+  const plumeRetention = Math.exp(-releaseAgeHours * (0.08 + airLoss * 0.05));
+  const rainWash = rain > 0.22 ? clamp((rain - 0.22) * 0.85, 0, 0.55) : 0;
+  const deposition = clamp(depositionRate * (0.42 + humidity * 0.28 + surfaceHold * 0.28 + rain * 0.2), 0.04, 0.9);
+  const rerelease = clamp(rereleaseRate * (0.22 + heat * 0.38 + solar * 0.25 + (weather?.windSpeed ?? settings.windSpeed ?? 2) / 18) * (1 - rain * 0.45), 0, 0.78);
+  const width = clamp(1 + trailAge / 10 + plumeAge / 6 + (1 - (settings.stability ?? 0.5)) * 0.75 + (settings.gustiness ?? 0.4) * 0.6, 1, 7);
+  const patchiness = clamp(profile.patch + trailAge / 38 + plumeAge / 14 + (settings.contamination ?? 0) * 0.48 + rainWash * 0.38, 0, 1);
+  const contamination = clamp((settings.contamination ?? 0) + trailAge / 96 + chemicalRate * 0.22 + rainWash * 0.16, 0, 1);
+  const sourceStrength = clamp(profile.source * sourceContinuity * (profile.continuous ? 1 : trailRetention), 0.03, 1.8);
+  return { sourceStrength, trailRetention, plumeRetention, deposition, rerelease, width, patchiness, contamination, rainWash };
+}
+
+function waterBodyFactor(type) {
+  if (type === "river" || type === "canal") return 1.24;
+  if (type === "ocean") return 1.36;
+  if (type === "lake") return 1.08;
+  if (type === "pond") return 0.92;
+  return 1;
+}
+
+function buildWaterPath(settings, time) {
+  if (!settings.waterEnabled && settings.sourceType !== "submerged") return [];
+  const bodyFactor = waterBodyFactor(settings.waterBodyType);
+  const depth = Math.max(0.1, settings.waterDepth ?? 2);
+  const currentSpeed = Math.max(0, settings.waterCurrentSpeed ?? 0.12);
+  const currentAngle = (90 - (settings.waterCurrentDir ?? settings.windDir ?? 0)) * DEG;
+  const mixing = clamp(settings.verticalMixing ?? 0.4, 0, 1);
+  const turbulence = clamp(settings.waterTurbulence ?? 0.35, 0, 1);
+  const buoyancy = clamp(settings.sourceBuoyancy ?? 0.5, 0, 1);
+  const wave = clamp(settings.waveAction ?? 0.25, 0, 1);
+  const salinity = clamp(settings.salinity ?? 0, 0, 1);
+  const riseMinutes = depth / Math.max(0.05, 0.06 + buoyancy * 0.18 + mixing * 0.12 - salinity * 0.025);
+  const underwaterDistance = clamp(currentSpeed * riseMinutes * 60 * bodyFactor, depth * 2, settings.radius * 1.2);
+  const lateralSpread = clamp(depth * (4 + turbulence * 10) + settings.radius * (0.035 + wave * 0.085), 8, settings.radius * 0.42);
+  const volatileShare = clamp(0.28 + wave * 0.28 + turbulence * 0.22 + buoyancy * 0.18 - salinity * 0.08, 0.08, 0.92);
+  const surfaceX = Math.cos(currentAngle) * underwaterDistance;
+  const surfaceY = Math.sin(currentAngle) * underwaterDistance;
+  const weather = weatherAt(settings, time, {}, surfaceX, surfaceY);
+  const windAngle = (90 - weather.windDir) * DEG;
+  const airDistance = clamp(weather.windSpeed * (settings.plumeAgeHours ?? 1.2) * 46 * (0.55 + volatileShare), 20, settings.radius * 1.5);
+  const zones = [];
+  for (let i = 0; i <= 10; i += 1) {
+    const f = i / 10;
+    const wobble = Math.sin(i * 1.7) * lateralSpread * 0.22;
+    const x = Math.cos(currentAngle) * underwaterDistance * f + Math.cos(currentAngle + Math.PI / 2) * wobble;
+    const y = Math.sin(currentAngle) * underwaterDistance * f + Math.sin(currentAngle + Math.PI / 2) * wobble;
+    zones.push({ x, y, intensity: (1 - f * 0.42) * (0.6 + currentSpeed * 0.2), uncertainty: clamp(0.28 + f * 0.34 + turbulence * 0.24, 0, 1), stage: "underwater" });
+  }
+  for (let i = 0; i < 12; i += 1) {
+    const angle = (i / 12) * Math.PI * 2;
+    const radius = lateralSpread * (0.32 + rand(i + 21) * 0.72);
+    zones.push({ x: surfaceX + Math.cos(angle) * radius, y: surfaceY + Math.sin(angle) * radius, intensity: volatileShare, uncertainty: clamp(0.22 + turbulence * 0.28 + wave * 0.22, 0, 1), stage: "surface" });
+  }
+  for (let i = 1; i <= 12; i += 1) {
+    const f = i / 12;
+    const spread = lateralSpread * (0.4 + f * 1.2 + (settings.gustiness ?? 0.4));
+    const side = signedRand(i * 17 + Math.floor(time * 10)) * spread;
+    const x = surfaceX + Math.cos(windAngle) * airDistance * f + Math.cos(windAngle + Math.PI / 2) * side;
+    const y = surfaceY + Math.sin(windAngle) * airDistance * f + Math.sin(windAngle + Math.PI / 2) * side;
+    zones.push({ x, y, intensity: volatileShare * (1 - f * 0.62), uncertainty: clamp(0.3 + f * 0.42 + wave * 0.16, 0, 1), stage: "airborne" });
+  }
+  return zones;
+}
+
 function seriesValue(values, time, fallback) {
   if (!Array.isArray(values) || values.length === 0) return fallback;
   const hour = clamp(time, 0, 23.999);
@@ -499,7 +596,43 @@ function seriesValue(values, time, fallback) {
   return a * (1 - f) + b * f;
 }
 
-function sampleWeather(sample, time, settings) {
+function seriesValueAtIndex(values, index, fallback) {
+  if (!Array.isArray(values) || values.length === 0) return fallback;
+  const bounded = clamp(index, 0, values.length - 1);
+  const i = Math.floor(bounded);
+  const j = Math.min(values.length - 1, i + 1);
+  const f = bounded - i;
+  const a = Number(values[i]);
+  const b = Number(values[j]);
+  if (!Number.isFinite(a)) return fallback;
+  if (!Number.isFinite(b)) return a;
+  return a * (1 - f) + b * f;
+}
+
+function sampleHourIndex(sample, time, ageHours = 0) {
+  const hourlyTimes = sample.hourly?.time ?? [];
+  const currentIndex = hourlyTimes.indexOf(sample.current?.time);
+  if (currentIndex < 0) return null;
+  const currentHour = Number(String(sample.current?.time ?? "").slice(11, 13));
+  if (!Number.isFinite(currentHour)) return null;
+  let hourDelta = time - currentHour;
+  if (hourDelta > 12) hourDelta -= 24;
+  if (hourDelta < -12) hourDelta += 24;
+  return currentIndex + hourDelta - ageHours;
+}
+
+function sampleWeather(sample, time, settings, ageHours = 0) {
+  const index = sampleHourIndex(sample, time, ageHours);
+  if (index !== null) {
+    return {
+      windSpeed: seriesValueAtIndex(sample.hourly?.windSpeed, index, sample.current?.windSpeed ?? settings.windSpeed),
+      windDir: seriesValueAtIndex(sample.hourly?.windDir, index, sample.current?.windDir ?? settings.windDir),
+      windGust: seriesValueAtIndex(sample.hourly?.windGust, index, sample.current?.windGust ?? settings.windSpeed),
+      temperature: seriesValueAtIndex(sample.hourly?.temperature, index, sample.current?.temperature ?? settings.temperature),
+      humidity: seriesValueAtIndex(sample.hourly?.humidity, index, sample.current?.humidity ?? settings.humidity),
+      precipitation: seriesValueAtIndex(sample.hourly?.precipitation, index, sample.current?.precipitation ?? settings.rain),
+    };
+  }
   return {
     windSpeed: seriesValue(sample.hourly?.windSpeed, time, sample.current?.windSpeed ?? settings.windSpeed),
     windDir: seriesValue(sample.hourly?.windDir, time, sample.current?.windDir ?? settings.windDir),
@@ -510,7 +643,7 @@ function sampleWeather(sample, time, settings) {
   };
 }
 
-function interpolateWeatherField(settings, time, x = 0, y = 0) {
+function interpolateWeatherField(settings, time, x = 0, y = 0, ageHours = 0) {
   const samples = settings.weatherGrid?.samples ?? [];
   if (settings.weatherSource !== "live" || samples.length === 0) return null;
 
@@ -527,7 +660,7 @@ function interpolateWeatherField(settings, time, x = 0, y = 0) {
     const dx = x - (sample.x ?? 0);
     const dy = y - (sample.y ?? 0);
     const weight = 1 / Math.max(40 * 40, dx * dx + dy * dy);
-    const weather = sampleWeather(sample, time, settings);
+    const weather = sampleWeather(sample, time, settings, ageHours);
     const dir = (Number(weather.windDir) || settings.windDir) * DEG;
     weightTotal += weight;
     windSin += Math.sin(dir) * weight;
@@ -556,7 +689,7 @@ function weatherAt(settings, time, variant = {}, x = 0, y = 0, localEnvironment 
   const eveningSettle = Math.max(0, Math.cos(((time - 20) / 24) * Math.PI * 2));
   const stabilitySettle = settings.stability * 0.34 - (1 - settings.stability) * 0.18;
   const shift = Math.sin(time * 0.78) * 26 * settings.gustiness + Math.sin(time * 1.9) * 9;
-  const sampled = interpolateWeatherField(settings, time, x, y);
+  const sampled = interpolateWeatherField(settings, time, x, y, variant.ageHours ?? 0);
   if (sampled) {
     const terrainSlow = clamp(
       1 -
@@ -615,18 +748,25 @@ function obstacleEffect(x, y, obstacle, windX, windY, radius) {
 }
 
 function makeSources(settings, time) {
+  const typeProfile = sourceTypeProfile(settings);
+  const currentWeather = weatherAt(settings, time, {}, 0, 0);
+  const currentAgeProfile = ageProfile(settings, Math.min(settings.plumeAgeHours ?? 1, settings.sourceAgeHours ?? 1), currentWeather);
   const sources = [
     {
-      kind: "subject",
+      kind: settings.sourceType === "moving-live" || settings.sourceType === "animal" ? "trail" : settings.sourceType === "submerged" ? "water-source" : "subject",
       x: 0,
       y: 0,
       z: 0.15,
-      weight: settings.sourceStrength,
-      strength: settings.sourceStrength,
+      weight: settings.sourceStrength * currentAgeProfile.sourceStrength,
+      strength: settings.sourceStrength * currentAgeProfile.sourceStrength,
       food: 0,
       leakRate: 1,
-      itemAge: settings.trackAge,
+      itemAge: settings.sourceAgeHours ?? settings.trackAge,
       recharge: 1,
+      trailAge: settings.trailAgeHours ?? settings.trackAge,
+      plumeAge: settings.plumeAgeHours ?? 1,
+      continuous: typeProfile.continuous,
+      sourceType: settings.sourceType ?? "moving-live",
       ventDirection: settings.windDir,
     },
   ];
@@ -663,6 +803,9 @@ function makeSources(settings, time) {
 
 function activeChamberExtent(settings) {
   let farthest = 0;
+  if (settings.waterEnabled || settings.sourceType === "submerged") {
+    for (const zone of buildWaterPath(settings, 12)) farthest = Math.max(farthest, Math.hypot(zone.x, zone.y));
+  }
   for (const chamber of settings.chambers ?? []) {
     if (!chamber.active) continue;
     const [x, y] = lonLatToLocal(chamber.lon, chamber.lat, settings.lat, settings.lon);
@@ -693,42 +836,54 @@ function pickSource(sources, seed, index = 0, guaranteedPasses = 0) {
 
 function makeParticle(settings, seed, releaseAge, source) {
   const sourceJitter = settings.radius * 0.025;
-  const trailBias = Math.min(settings.radius * 0.16, releaseAge * 0.18);
+  const releaseAgeHours = releaseAge / 60;
+  const age = ageProfile(settings, releaseAgeHours, weatherAt(settings, Math.max(0, (settings.plumeAgeHours ?? 1) - releaseAgeHours), {}, source.x, source.y));
+  const trailBias = source.kind === "trail" ? Math.min(settings.radius * 0.44, (source.trailAge ?? settings.trackAge ?? 0) * 5.2 + releaseAgeHours * 8) : Math.min(settings.radius * 0.08, releaseAge * 0.04);
   const bearing = (90 - settings.windDir + 180) * DEG;
   const chamberSpread = source.kind === "chamber" ? settings.radius * (0.004 + (source.leakRate ?? 0.6) * 0.012) : sourceJitter;
   const ventBearing = (90 - (source.ventDirection ?? settings.windDir)) * DEG;
   const ventBias = source.kind === "chamber" ? settings.radius * (0.018 + (source.leakRate ?? 0.6) * 0.028) * rand(seed + 23) : 0;
   const leakAgePenalty = source.kind === "chamber" ? Math.exp(-(source.itemAge ?? 0) / 120) : 1;
+  const trailSpread = source.kind === "trail" ? settings.radius * 0.012 * age.width : 0;
+  const patchGate = source.kind === "trail" ? clamp(1 - age.patchiness * rand(seed + 41), 0.18, 1) : 1;
   return {
     sourceKind: source.kind,
     sourceId: source.id,
     x:
       source.x +
-      signedRand(seed + 3) * chamberSpread +
-      (source.kind === "subject" ? Math.cos(bearing) * trailBias * rand(seed + 5) : Math.cos(ventBearing) * ventBias),
+      signedRand(seed + 3) * (chamberSpread + trailSpread) +
+      (source.kind === "trail" ? Math.cos(bearing) * trailBias * rand(seed + 5) : source.kind === "subject" ? signedRand(seed + 5) * sourceJitter * 0.35 : Math.cos(ventBearing) * ventBias),
     y:
       source.y +
-      signedRand(seed + 7) * chamberSpread +
-      (source.kind === "subject" ? Math.sin(bearing) * trailBias * rand(seed + 11) : Math.sin(ventBearing) * ventBias),
+      signedRand(seed + 7) * (chamberSpread + trailSpread) +
+      (source.kind === "trail" ? Math.sin(bearing) * trailBias * rand(seed + 11) : source.kind === "subject" ? signedRand(seed + 11) * sourceJitter * 0.35 : Math.sin(ventBearing) * ventBias),
     z: source.z + rand(seed + 13) * (source.kind === "chamber" ? 0.35 + (source.leakRate ?? 0.6) * 0.65 : 1.2),
     age: releaseAge,
-    mass: (source.strength * (0.72 + rand(seed + 17) * 0.56) + source.food * 0.18) * leakAgePenalty,
+    mass: (source.strength * (0.72 + rand(seed + 17) * 0.56) + source.food * 0.18) * leakAgePenalty * age.plumeRetention * patchGate,
+    ageProfile: age,
   };
 }
 
-function addSourcePool(ground, air, drainage, environment, gridSize, step, radius, source, settings, time, variant) {
+function addSourcePool(ground, air, drainage, surfaceDeposit, reRelease, waterSignal, environment, gridSize, step, radius, source, settings, time, variant) {
   if (Math.hypot(source.x, source.y) > radius * 0.995) return;
   const envHere = environmentAt(environment, gridSize, step, radius, source.x, source.y);
   const weather = weatherAt(settings, time, variant, source.x, source.y, envHere);
+  const age = ageProfile(settings, source.plumeAge ?? settings.plumeAgeHours ?? 1, weather, envHere);
   const rain = clamp(weather.rain ?? settings.rain, 0, 1);
   const isChamber = source.kind === "chamber";
-  const pooledMass = source.strength * (isChamber ? 8.5 : 4.2) + source.food * (isChamber ? 2.8 : 0.5);
+  const isWater = source.kind === "water-source";
+  const pooledMass = (source.strength * (isChamber ? 8.5 : isWater ? 2.2 : 4.2) + source.food * (isChamber ? 2.8 : 0.5)) * age.sourceStrength;
   const hold = clamp(envHere.surfaceHold * (0.84 + envHere.canopy * 0.18 + envHere.moisture * 0.16 - envHere.impervious * 0.16), 0.18, 1.9);
   const localLift = clamp(0.2 + source.z / 9 + envHere.road * 0.08 + envHere.impervious * 0.05 - envHere.canopy * 0.06, 0.08, 0.82);
   const drainShare = clamp(rain * settings.drainage * (envHere.drainage + envHere.lowPoint * 0.32) * 0.52, 0, 0.5);
-  addKernel(ground, gridSize, step, radius, source.x, source.y, pooledMass * hold * (1 - localLift * 0.42));
-  addKernel(air, gridSize, step, radius, source.x, source.y, pooledMass * localLift * (0.54 + weather.windSpeed * 0.035));
+  const surfaceMass = pooledMass * hold * age.deposition * (1 - localLift * 0.36);
+  const rereleaseMass = surfaceMass * age.rerelease * (0.64 + weather.windSpeed * 0.04);
+  addKernel(ground, gridSize, step, radius, source.x, source.y, pooledMass * hold * (1 - localLift * 0.42) * (1 - age.deposition * 0.28));
+  addKernel(surfaceDeposit, gridSize, step, radius, source.x, source.y, surfaceMass);
+  addKernel(reRelease, gridSize, step, radius, source.x, source.y, rereleaseMass);
+  addKernel(air, gridSize, step, radius, source.x, source.y, pooledMass * localLift * (0.54 + weather.windSpeed * 0.035) + rereleaseMass * 0.72);
   addKernel(drainage, gridSize, step, radius, source.x, source.y - settings.drainage * rain * settings.radius * 0.04, pooledMass * drainShare);
+  if (isWater) addKernel(waterSignal, gridSize, step, radius, source.x, source.y, pooledMass * 0.7);
 }
 
 function addKernel(grid, gridSize, step, radius, x, y, mass) {
@@ -760,6 +915,10 @@ function simulate(settings, time, variant = {}) {
   const ground = new Float32Array(gridSize * gridSize);
   const air = new Float32Array(gridSize * gridSize);
   const drainage = new Float32Array(gridSize * gridSize);
+  const surfaceDeposit = new Float32Array(gridSize * gridSize);
+  const reRelease = new Float32Array(gridSize * gridSize);
+  const waterSignal = new Float32Array(gridSize * gridSize);
+  const plumeAge = new Float32Array(gridSize * gridSize);
   const environment = getEnvironmentRaster(rasterSettings, gridSize, step);
   const buildingMode = buildingModeCoefficients(settings.buildingMode);
   const obstacles = makeObstacles(rasterSettings);
@@ -769,12 +928,24 @@ function simulate(settings, time, variant = {}) {
   const baseParticleCount = (analysisRadius >= 1000 ? 1800 : analysisRadius <= 300 ? 520 : 760) + sourceBonus;
   const particleCount = Math.max(180, Math.round(baseParticleCount * (variant.particleScale ?? (coarse ? 0.35 : 1))));
   const guaranteedSourcePasses = Math.min(18, Math.max(4, Math.floor(particleCount / Math.max(1, sources.length * 4))));
-  const historyHours = clamp(settings.trackAge + 2 + settings.stability * 3 + (analysisRadius >= 1000 ? 1.5 : 0), 2, 42);
+  const historyHours = clamp(Math.max(settings.trackAge ?? 0, settings.sourceAgeHours ?? 0, settings.trailAgeHours ?? 0, settings.plumeAgeHours ?? 0) + 2 + settings.stability * 3 + (analysisRadius >= 1000 ? 1.5 : 0), 2, 72);
   const retention = surfaceRetention(settings.surface);
   const rain = clamp(weatherAt(settings, time, variant, 0, 0).rain ?? settings.rain, 0, 1);
 
   for (const source of sources) {
-    addSourcePool(ground, air, drainage, environment, gridSize, step, radius, source, settings, time, variant);
+    addSourcePool(ground, air, drainage, surfaceDeposit, reRelease, waterSignal, environment, gridSize, step, radius, source, settings, time, variant);
+  }
+
+  const waterZones = buildWaterPath(settings, time);
+  for (const zone of waterZones) {
+    const stageMass = zone.intensity * (zone.stage === "underwater" ? 1.6 : zone.stage === "surface" ? 2.4 : 1.3) * settings.sourceStrength;
+    addKernel(waterSignal, gridSize, step, radius, zone.x, zone.y, stageMass);
+    if (zone.stage === "surface") {
+      addKernel(surfaceDeposit, gridSize, step, radius, zone.x, zone.y, stageMass * 0.44);
+      addKernel(reRelease, gridSize, step, radius, zone.x, zone.y, stageMass * (0.26 + (settings.waveAction ?? 0.25) * 0.36));
+      addKernel(air, gridSize, step, radius, zone.x, zone.y, stageMass * 0.62);
+    }
+    if (zone.stage === "airborne") addKernel(air, gridSize, step, radius, zone.x, zone.y, stageMass * 0.86);
   }
 
   for (let i = 0; i < particleCount; i += 1) {
@@ -787,7 +958,8 @@ function simulate(settings, time, variant = {}) {
     for (let s = 0; s < steps; s += 1) {
       const t = (time - releaseAge + (releaseAge * s) / steps + 48) % 24;
       const envHere = environmentAt(environment, gridSize, step, radius, p.x, p.y);
-      const weather = weatherAt(settings, t, variant, p.x, p.y, envHere);
+      const remainingAgeHours = Math.max(0, releaseAge - (releaseAge * s) / steps);
+      const weather = weatherAt(settings, t, { ...variant, ageHours: remainingAgeHours }, p.x, p.y, envHere);
       const angle = (90 - weather.windDir) * DEG;
       const windX = Math.cos(angle);
       const windY = Math.sin(angle);
@@ -863,6 +1035,8 @@ function simulate(settings, time, variant = {}) {
     }
 
     const particleEnvironment = environmentAt(environment, gridSize, step, radius, p.x, p.y);
+    const finalWeather = weatherAt(settings, time, variant, p.x, p.y, particleEnvironment);
+    const age = p.ageProfile ?? ageProfile(settings, releaseAge, finalWeather, particleEnvironment);
     const nearDrain = clamp(particleEnvironment.drainage + particleEnvironment.road * 0.08, 0, 1);
     const groundFraction = clamp(
       (1.15 - p.z / 5) * retention * particleEnvironment.surfaceHold * (0.72 + settings.stability * 0.36 + settings.canopy * 0.26 + particleEnvironment.moisture * 0.12),
@@ -871,10 +1045,15 @@ function simulate(settings, time, variant = {}) {
     );
     const drainageFraction = clamp(rain * settings.drainage * nearDrain * (0.45 + particleEnvironment.lowPoint * 0.26), 0, 0.84);
     const airFraction = clamp(1 - groundFraction - drainageFraction * 0.45, 0.04, 0.95);
+    const surfaceFraction = clamp(age.deposition * groundFraction * (0.55 + particleEnvironment.surfaceHold * 0.18), 0.02, 0.72);
+    const rereleaseFraction = clamp(age.rerelease * surfaceFraction * (0.42 + finalWeather.windSpeed * 0.035), 0, 0.54);
 
-    addKernel(ground, gridSize, step, radius, p.x, p.y, p.mass * groundFraction);
-    addKernel(air, gridSize, step, radius, p.x, p.y, p.mass * airFraction * (0.55 + p.z / 24));
+    addKernel(ground, gridSize, step, radius, p.x, p.y, p.mass * groundFraction * (1 - surfaceFraction * 0.34));
+    addKernel(surfaceDeposit, gridSize, step, radius, p.x, p.y, p.mass * surfaceFraction);
+    addKernel(reRelease, gridSize, step, radius, p.x, p.y, p.mass * rereleaseFraction);
+    addKernel(air, gridSize, step, radius, p.x, p.y, p.mass * (airFraction * (0.55 + p.z / 24) + rereleaseFraction * 0.58));
     addKernel(drainage, gridSize, step, radius, p.x, p.y - settings.drainage * rain * analysisRadius * 0.08, p.mass * drainageFraction);
+    addKernel(plumeAge, gridSize, step, radius, p.x, p.y, releaseAge * Math.max(0.001, p.mass));
   }
 
   for (let idx = 0; idx < ground.length; idx += 1) {
@@ -891,6 +1070,7 @@ function simulate(settings, time, variant = {}) {
     const edgePocket = buildingEdge * (1 - building) * buildingMode.edgePocket;
     const shadeHold = buildingEdge * buildingMode.shadeRetention;
     const drainWash = rain * settings.drainage * drain;
+    const ageNow = ageProfile(settings, settings.plumeAgeHours ?? 1, weatherAt(settings, time, variant), { surfaceHold, moisture, drainage: drain, impervious, lowPoint });
     const groundMultiplier = clamp(
       surfaceHold * (1 - road * 0.32 + canopy * 0.22 + moisture * 0.24 + lowPoint * 0.16 - impervious * 0.24 - building * buildingMode.groundBlock + edgePocket + shadeHold - drainWash * 0.18),
       0.03,
@@ -900,9 +1080,13 @@ function simulate(settings, time, variant = {}) {
     ground[idx] *= groundMultiplier;
     air[idx] = air[idx] * airMultiplier + roadLift;
     drainage[idx] += drain * rain * settings.drainage * 0.1 + lowPoint * rain * 0.045 + road * rain * settings.drainage * 0.025 + canopy * rain * 0.012 + buildingEdge * rain * 0.01;
+    const reLift = surfaceDeposit[idx] * ageNow.rerelease * clamp(0.22 + impervious * 0.18 + road * 0.08 + (settings.sunlight ?? 0.5) * 0.2 - rain * 0.16, 0.03, 0.62);
+    reRelease[idx] += reLift;
+    air[idx] += reLift * 0.78;
+    drainage[idx] += surfaceDeposit[idx] * drainWash * 0.12;
   }
 
-  return { ground, air, drainage, gridSize, step, obstacles, analysisRadius, domainRadius, environment };
+  return { ground, air, drainage, surfaceDeposit, reRelease, waterSignal, plumeAge, waterZones, gridSize, step, obstacles, analysisRadius, domainRadius, environment };
 }
 
 function signalSettingsKey(settings) {
@@ -932,6 +1116,25 @@ function signalSettingsKey(settings) {
     settings.drainage,
     settings.sunlight,
     settings.trackAge,
+    settings.sourceType,
+    settings.sourceAgeHours,
+    settings.trailAgeHours,
+    settings.plumeAgeHours,
+    settings.decompositionStage,
+    settings.airborneLossRate,
+    settings.surfaceDepositionRate,
+    settings.chemicalChangeRate,
+    settings.rereleaseRate,
+    settings.waterEnabled,
+    settings.waterBodyType,
+    settings.waterDepth,
+    settings.waterCurrentDir,
+    settings.waterCurrentSpeed,
+    settings.verticalMixing,
+    settings.waveAction,
+    settings.waterTurbulence,
+    settings.sourceBuoyancy,
+    settings.salinity,
     settings.contamination,
     settings.sourceStrength,
     settings.surface,
@@ -1066,6 +1269,9 @@ function buildField(settings, time, options = {}) {
   let maxGround = 0;
   let maxAir = 0;
   let maxDrainage = 0;
+  let maxSurface = 0;
+  let maxReRelease = 0;
+  let maxWater = 0;
   let active = 0;
   let total = 0;
   let totalUncertainty = 0;
@@ -1073,13 +1279,19 @@ function buildField(settings, time, options = {}) {
   let groundTotal = 0;
   let airTotal = 0;
   let drainageTotal = 0;
+  let surfaceTotal = 0;
+  let reReleaseTotal = 0;
+  let waterTotal = 0;
 
   for (let i = 0; i < base.ground.length; i += 1) {
-    const value = base.ground[i] + base.air[i] * 0.72 + base.drainage[i] * 0.72;
+    const value = base.ground[i] + base.air[i] * 0.72 + base.drainage[i] * 0.72 + base.reRelease[i] * 0.58 + base.waterSignal[i] * 0.52;
     max = Math.max(max, value);
     maxGround = Math.max(maxGround, base.ground[i]);
     maxAir = Math.max(maxAir, base.air[i]);
     maxDrainage = Math.max(maxDrainage, base.drainage[i]);
+    maxSurface = Math.max(maxSurface, base.surfaceDeposit[i]);
+    maxReRelease = Math.max(maxReRelease, base.reRelease[i]);
+    maxWater = Math.max(maxWater, base.waterSignal[i]);
   }
 
   for (let yi = 0; yi < base.gridSize; yi += 1) {
@@ -1093,7 +1305,10 @@ function buildField(settings, time, options = {}) {
       const g = base.ground[idx];
       const a = base.air[idx];
       const d = base.drainage[idx];
-      const value = g + a * 0.72 + d * 0.72;
+      const sfc = base.surfaceDeposit[idx];
+      const rr = base.reRelease[idx];
+      const water = base.waterSignal[idx];
+      const value = g + a * 0.72 + d * 0.72 + rr * 0.58 + water * 0.52;
       const outputCutoff = settings.radius >= 1000 ? 0.006 : settings.radius >= 750 ? 0.018 : 0.035;
       if (value < max * outputCutoff * (outsideRadius ? 0.55 : 1)) continue;
 
@@ -1101,24 +1316,31 @@ function buildField(settings, time, options = {}) {
       const signalGate = clamp(intensity * 1.45, 0, 1);
       let uncertainty = 0;
       if (quick) {
-        const layerMix = clamp(a / Math.max(0.0001, g + a + d), 0, 1);
-        const motionSpread = settings.gustiness * 0.36 + (1 - settings.stability) * 0.18 + settings.contamination * 0.12 + layerMix * 0.16 + (outsideRadius ? 0.1 : 0);
+        const layerMix = clamp((a + water * 0.55) / Math.max(0.0001, g + a + d + rr + water), 0, 1);
+        const ageSpread = clamp((settings.trailAgeHours ?? settings.trackAge ?? 0) / 48 + (settings.plumeAgeHours ?? 0) / 12, 0, 1);
+        const motionSpread = settings.gustiness * 0.36 + (1 - settings.stability) * 0.18 + settings.contamination * 0.12 + layerMix * 0.16 + ageSpread * 0.22 + (outsideRadius ? 0.1 : 0);
         uncertainty = clamp(motionSpread * (0.28 + signalGate * 0.72), 0, 1);
       } else {
-        const v1 = left.ground[idx] + left.air[idx] * 0.72 + left.drainage[idx] * 0.72;
-        const v2 = right.ground[idx] + right.air[idx] * 0.72 + right.drainage[idx] * 0.72;
+        const v1 = left.ground[idx] + left.air[idx] * 0.72 + left.drainage[idx] * 0.72 + left.reRelease[idx] * 0.58 + left.waterSignal[idx] * 0.52;
+        const v2 = right.ground[idx] + right.air[idx] * 0.72 + right.drainage[idx] * 0.72 + right.reRelease[idx] * 0.58 + right.waterSignal[idx] * 0.52;
         const mean = (value + v1 + v2) / 3;
         const variance = ((value - mean) ** 2 + (v1 - mean) ** 2 + (v2 - mean) ** 2) / 3;
         const ensembleSpread = clamp(Math.sqrt(variance) / Math.max(mean, max * 0.08), 0, 1);
-        uncertainty = clamp(ensembleSpread * (0.18 + signalGate * 0.82), 0, 1);
+        const ageSpread = clamp((settings.trailAgeHours ?? settings.trackAge ?? 0) / 54 + (settings.plumeAgeHours ?? 0) / 14, 0, 1);
+        uncertainty = clamp((ensembleSpread + ageSpread * 0.38) * (0.18 + signalGate * 0.82), 0, 1);
       }
       const groundIntensity = normalize(g, maxGround);
       const airIntensity = normalize(a, maxAir);
       const drainageIntensity = normalize(d, maxDrainage);
+      const surfaceIntensity = normalize(sfc, maxSurface);
+      const reReleaseIntensity = normalize(rr, maxReRelease);
+      const waterIntensity = normalize(water, maxWater);
+      const avgAge = base.plumeAge[idx] / Math.max(0.001, value);
+      const detectionProbability = clamp(intensity * (1 - uncertainty * 0.55) * (1 - (settings.contamination ?? 0) * 0.28), 0, 1);
       const [lon, lat] = localToLonLat(x, y, settings.lat, settings.lon);
-      const layer = d > g * 0.58 && d > a * 0.42 ? "drainage" : a > g * 0.86 ? "air" : "ground";
+      const layer = waterIntensity > Math.max(groundIntensity, airIntensity, drainageIntensity, surfaceIntensity) * 0.82 ? "water" : d > g * 0.58 && d > a * 0.42 ? "drainage" : surfaceIntensity > groundIntensity * 0.92 && surfaceIntensity > airIntensity * 0.7 ? "surface" : a > g * 0.86 ? "air" : "ground";
 
-      cells.push({ lon, lat, intensity, ground: groundIntensity, air: airIntensity, drainage: drainageIntensity, uncertainty, outsideRadius, layer });
+      cells.push({ lon, lat, intensity, ground: groundIntensity, air: airIntensity, drainage: drainageIntensity, surfaceDeposit: surfaceIntensity, reRelease: reReleaseIntensity, plumeAge: avgAge, detectionProbability, waterSignal: waterIntensity, uncertainty, outsideRadius, layer });
       if (!outsideRadius) {
         active += 1;
         total += intensity;
@@ -1126,6 +1348,9 @@ function buildField(settings, time, options = {}) {
         groundTotal += g;
         airTotal += a;
         drainageTotal += d;
+        surfaceTotal += sfc;
+        reReleaseTotal += rr;
+        waterTotal += water;
         if (intensity > 0.46 && uncertainty > 0.28) pockets += 1;
       }
     }
@@ -1138,9 +1363,9 @@ function buildField(settings, time, options = {}) {
   const coverage = clamp(active / cellsInRadius, 0, 1);
   const continuity = clamp((total / Math.max(1, active)) * (1 - settings.contamination * 0.34) * (settings.stability * 0.25 + 0.82) * 1.9, 0, 1);
   const uncertainty = clamp(totalUncertainty / Math.max(1, active), 0, 1);
-  const layerTotal = Math.max(0.001, groundTotal + airTotal + drainageTotal);
+  const layerTotal = Math.max(0.001, groundTotal + airTotal + drainageTotal + surfaceTotal + reReleaseTotal + waterTotal);
 
-  const visibleObstacles = base.obstacles.map(({ x, y, index, ...item }) => item);
+  const visibleObstacles = base.obstacles.map((item) => ({ lon: item.lon, lat: item.lat, type: item.type, size: item.size }));
   const explanationParts = [];
   if (weather.windSpeed > 5.8) explanationParts.push("fast wind advects particles farther and thins the ground layer");
   else if (weather.windSpeed < 1.4) explanationParts.push("light air leaves a compact, pooled particle field");
@@ -1157,6 +1382,10 @@ function buildField(settings, time, options = {}) {
   if (settings.buildingMode === "shade") explanationParts.push("shade mode increases persistent low scent around building edges");
   if (rawEnvironment?.stormwater?.counts) explanationParts.push("mapped stormwater inlets, mains, channels, ponds, and basins shape rain-driven scent transport");
   if (settings.drainage > 0.45 && settings.rain > 0.25) explanationParts.push("rain and drainage shift part of the signal into stormwater network corridors");
+  if ((settings.trailAgeHours ?? 0) > 6) explanationParts.push("older trail age broadens and fragments the detectable corridor");
+  if ((settings.sourceAgeHours ?? 0) > 12 && settings.sourceType !== "moving-live") explanationParts.push("continuing source age replenishes odor while chemistry and surface deposition change");
+  if ((settings.rereleaseRate ?? 0) > 0.35) explanationParts.push("surface-deposited odor can re-release under warming, drying, and airflow");
+  if (settings.waterEnabled || settings.sourceType === "submerged") explanationParts.push("submerged-source mode separates underwater transport, surface emergence, and airborne detection");
   if (settings.contamination > 0.45) explanationParts.push("contamination lowers path continuity and raises false-pocket risk");
 
   const assumptions = [
@@ -1164,7 +1393,11 @@ function buildField(settings, time, options = {}) {
     `${Math.round(domainRadius)} m expanded solver domain`,
     "selected radius is metric scale, not plume edge",
     "particle/puff transport",
-    "ground + nose-height layers",
+    "ground + nose-height + deposited scent layers",
+    `${settings.sourceType ?? "moving-live"} source type`,
+    `${Math.round(settings.sourceAgeHours ?? settings.trackAge ?? 0)} h source age`,
+    `${Math.round(settings.trailAgeHours ?? settings.trackAge ?? 0)} h trail age`,
+    `${(settings.plumeAgeHours ?? 1).toFixed(1)} h plume-age window`,
     `${(settings.chambers ?? []).filter((chamber) => chamber.active).length} chamber odor beacons`,
     "per-station vent/leak/age/recharge",
     "OSM roads + county buildings/canopy",
@@ -1175,6 +1408,8 @@ function buildField(settings, time, options = {}) {
     quick ? "fast motion uncertainty proxy" : "full uncertainty ensemble",
     "cached weather-score daily signal",
     weather.source === "live-grid" ? "Open-Meteo local weather grid" : "manual weather baseline",
+    settings.weatherGrid?.historyHours ? `${Math.round(settings.weatherGrid.historyHours)} h weather-history request` : "weather history approximated from current cycle",
+    settings.waterEnabled || settings.sourceType === "submerged" ? "underwater/surface/air water pathway" : "land-source pathway",
     "obstacle wake/channeling",
     "illustrative coefficients",
   ];
@@ -1185,6 +1420,10 @@ function buildField(settings, time, options = {}) {
     dogPath: buildDogPath(settings, time, base),
     obstacles: visibleObstacles,
     chambers: buildChamberResults(settings, base),
+    waterZones: base.waterZones.map((zone) => {
+      const [lon, lat] = localToLonLat(zone.x, zone.y, settings.lat, settings.lon);
+      return { lon, lat, intensity: clamp(zone.intensity, 0, 1), uncertainty: clamp(zone.uncertainty, 0, 1), stage: zone.stage };
+    }),
     signal,
     metrics: {
       detectability,
@@ -1196,6 +1435,9 @@ function buildField(settings, time, options = {}) {
       groundHold: groundTotal / layerTotal,
       airborne: airTotal / layerTotal,
       drainageLoad: drainageTotal / layerTotal,
+      surfaceLoad: surfaceTotal / layerTotal,
+      reReleaseLoad: reReleaseTotal / layerTotal,
+      waterSignal: waterTotal / layerTotal,
     },
     weather: {
       windDir: weather.windDir,
