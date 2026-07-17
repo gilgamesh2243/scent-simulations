@@ -41,7 +41,7 @@ test("client app contains the forensic-local modeling controls", async () => {
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /Geographic odor field/);
+  assert.match(page, /Model control sections/);
   assert.match(page, /9318 SW 43rd Ln/);
   assert.match(page, /SW 44th Ave/);
   assert.match(page, /SW 91st Dr/);
@@ -50,6 +50,11 @@ test("client app contains the forensic-local modeling controls", async () => {
   assert.match(page, /Click map to place chamber/);
   assert.match(page, /addChamberAt/);
   assert.match(page, /removeChamber/);
+  assert.match(page, /ControlTab/);
+  assert.match(page, /panel-tabs/);
+  assert.match(page, /ChamberTwinPanel/);
+  assert.match(page, /buildChamberTwins/);
+  assert.match(page, /createPlacedChamber/);
   assert.match(page, /stationLabel/);
   assert.match(page, /Environment coverage/);
   assert.match(page, /fetchExpandedEnvironment/);

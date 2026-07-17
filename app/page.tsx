@@ -21,11 +21,17 @@ import {
 import maplibregl from "maplibre-gl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ChamberTwinPanel } from "@/components/chamber-twin-panel";
+import { createPlacedChamber, stationLabel } from "@/lib/chamber-twin/defaults";
+import { buildChamberTwins } from "@/lib/chamber-twin/simulator";
+import type { ChamberCoverageStatus, ChamberTwin, ScentChamber } from "@/lib/chamber-twin/types";
+
 type Basemap = "street" | "satellite";
 type Surface = "grass" | "forest" | "soil" | "pavement" | "mixed";
 type ScentView = "combined" | "ground" | "air" | "drainage" | "uncertainty";
 type BuildingMode = "normal" | "obstruction" | "wake" | "shade";
 type WeatherSource = "live" | "manual";
+type ControlTab = "map" | "chambers" | "conditions" | "output";
 
 type LayerToggles = {
   odor: boolean;
@@ -38,23 +44,6 @@ type LayerToggles = {
   chambers: boolean;
   wind: boolean;
   dogPath: boolean;
-};
-
-type ScentChamber = {
-  id: string;
-  name: string;
-  road: string;
-  lat: number;
-  lon: number;
-  scentStrength: number;
-  foodStrength: number;
-  ventHeight: number;
-  ventDirection: number;
-  leakRate: number;
-  itemAge: number;
-  rechargeHours: number;
-  detectionRadius: number;
-  active: boolean;
 };
 
 type GeoJsonFeature = {
@@ -131,7 +120,7 @@ type EnvironmentCoverage = {
   needsRefresh: boolean;
   score: number;
   message: string;
-  stationStatuses: Record<string, "mapped" | "edge" | "sparse">;
+  stationStatuses: Record<string, ChamberCoverageStatus>;
   missingLayers: string[];
 };
 
@@ -311,6 +300,13 @@ const DEFAULTS: Settings = {
       rechargeHours: 18,
       detectionRadius: 38,
       active: true,
+      preset: "food-scent-hybrid",
+      scentArticle: "blanket",
+      foodLevel: 0.82,
+      batteryCharge: 0.86,
+      solarExposure: 0.72,
+      internalHumidityBias: 0.03,
+      lastServiceHour: 11,
     },
     {
       id: "sw91",
@@ -327,6 +323,13 @@ const DEFAULTS: Settings = {
       rechargeHours: 24,
       detectionRadius: 42,
       active: true,
+      preset: "vented-tote",
+      scentArticle: "clothing",
+      foodLevel: 0.68,
+      batteryCharge: 0.78,
+      solarExposure: 0.58,
+      internalHumidityBias: 0.02,
+      lastServiceHour: 10,
     },
   ],
 };
@@ -471,7 +474,7 @@ function boundsContains(outer: EnvironmentBounds | null, inner: EnvironmentBound
   return padded.minLon <= inner.minLon && padded.minLat <= inner.minLat && padded.maxLon >= inner.maxLon && padded.maxLat >= inner.maxLat;
 }
 
-function pointBoundsStatus(bounds: EnvironmentBounds | null, lon: number, lat: number, centerLat: number): "mapped" | "edge" | "sparse" {
+function pointBoundsStatus(bounds: EnvironmentBounds | null, lon: number, lat: number, centerLat: number): ChamberCoverageStatus {
   if (!bounds) return "sparse";
   if (lon < bounds.minLon || lon > bounds.maxLon || lat < bounds.minLat || lat > bounds.maxLat) return "sparse";
   const west = localMetersBetween(bounds.minLon, lat, centerLat, lon).distance;
@@ -507,7 +510,7 @@ function evaluateEnvironmentCoverage(environment: EnvironmentData | null, settin
   const missingLayers = Object.entries(layerBounds(environment))
     .filter(([, layer]) => !boundsContains(layer, requiredBounds, 0, settings.lat))
     .map(([key]) => key);
-  const stationStatuses: Record<string, "mapped" | "edge" | "sparse"> = {};
+  const stationStatuses: Record<string, ChamberCoverageStatus> = {};
   for (const chamber of chambers) stationStatuses[chamber.id] = pointBoundsStatus(bounds, chamber.lon, chamber.lat, settings.lat);
   const contains = boundsContains(bounds, requiredBounds, 0, settings.lat);
   const score = contains ? (missingLayers.length ? 0.72 : 1) : 0.38;
@@ -788,23 +791,13 @@ function tooltipHtml(title: string, detail: string) {
   return `<div class="deck-tooltip-title">${title}</div><div class="deck-tooltip-detail">${detail}</div>`;
 }
 
-function stationLabel(index: number) {
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-  if (index < alphabet.length) return alphabet[index];
-  return `S${index + 1}`;
-}
-
-function stationName(index: number) {
-  return `Station ${stationLabel(index)}`;
-}
-
-function stationCoverageLabel(status: "mapped" | "edge" | "sparse" | undefined) {
+function stationCoverageLabel(status: ChamberCoverageStatus | undefined) {
   if (status === "sparse") return "sparse data";
   if (status === "edge") return "edge data";
   return "mapped";
 }
 
-function stationCoverageClass(status: "mapped" | "edge" | "sparse" | undefined) {
+function stationCoverageClass(status: ChamberCoverageStatus | undefined) {
   if (status === "sparse") return "sparse";
   if (status === "edge") return "edge";
   return "mapped";
@@ -908,9 +901,6 @@ function SignalChart({ signal, time }: { signal: SignalPoint[]; time: number }) 
 function ControlPanel({
   settings,
   field,
-  time,
-  playing,
-  speed,
   scentView,
   layerToggles,
   weatherGrid,
@@ -919,21 +909,17 @@ function ControlPanel({
   environmentStatus,
   environmentMessage,
   addingChamber,
+  chamberTwins,
+  selectedChamberId,
   onSettings,
   onStartAddChamber,
+  onSelectChamber,
   onRemoveChamber,
-  onReset,
-  onTime,
-  onPlay,
-  onSpeed,
   onScentView,
   onLayerToggle,
 }: {
   settings: Settings;
   field: FieldResult | null;
-  time: number;
-  playing: boolean;
-  speed: number;
   scentView: ScentView;
   layerToggles: LayerToggles;
   weatherGrid: WeatherGrid | null;
@@ -942,259 +928,333 @@ function ControlPanel({
   environmentStatus: "idle" | "loading" | "ready" | "error";
   environmentMessage: string;
   addingChamber: boolean;
+  chamberTwins: ChamberTwin[];
+  selectedChamberId: string | null;
   onSettings: (patch: Partial<Settings>) => void;
   onStartAddChamber: () => void;
+  onSelectChamber: (id: string) => void;
   onRemoveChamber: (id: string) => void;
+  onScentView: (view: ScentView) => void;
+  onLayerToggle: (key: keyof LayerToggles) => void;
+}) {
+  const [controlTab, setControlTab] = useState<ControlTab>("map");
+  const chamberResultsById = new Map((field?.chambers ?? []).map((chamber) => [chamber.id, chamber]));
+  const chamberList = settings.chambers ?? DEFAULTS.chambers;
+  const chamberTwinsById = new Map(chamberTwins.map((twin) => [twin.chamber.id, twin]));
+
+  return (
+    <div className="controls">
+      <section className="control-card panel-tabs-card">
+        <div className="panel-tabs" role="tablist" aria-label="Model control sections">
+          {[
+            ["map", "Map"],
+            ["chambers", "Chambers"],
+            ["conditions", "Conditions"],
+            ["output", "Output"],
+          ].map(([tab, label]) => (
+            <button key={tab} className={controlTab === tab ? "active" : ""} type="button" role="tab" aria-selected={controlTab === tab} onClick={() => setControlTab(tab as ControlTab)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {controlTab === "map" ? (
+        <>
+          <section className="control-card">
+            <div className="section-title">
+              <MapPin size={17} />
+              9318 SW 43rd Ln
+            </div>
+            <div className="coordinate-grid">
+              <label>
+                Lat
+                <input value={settings.lat} type="number" step="0.0001" onChange={(event) => onSettings({ lat: Number(event.target.value) })} />
+              </label>
+              <label>
+                Lon
+                <input value={settings.lon} type="number" step="0.0001" onChange={(event) => onSettings({ lon: Number(event.target.value) })} />
+              </label>
+            </div>
+            <div className="choice-row">
+              {[250, 500, 1000].map((radius) => (
+                <button key={radius} className={settings.radius === radius ? "active" : ""} type="button" onClick={() => onSettings({ radius })}>
+                  {radius === 1000 ? "1 km" : `${radius} m`}
+                </button>
+              ))}
+            </div>
+            <div className="choice-row">
+              {(["street", "satellite"] as Basemap[]).map((basemap) => (
+                <button key={basemap} className={settings.basemap === basemap ? "active" : ""} type="button" onClick={() => onSettings({ basemap })}>
+                  {basemap}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="control-card">
+            <div className="section-title">
+              <Layers size={17} />
+              Analysis layers
+            </div>
+            <div className="mode-grid">
+              {(["combined", "ground", "air", "drainage", "uncertainty"] as ScentView[]).map((view) => (
+                <button key={view} className={scentView === view ? "active" : ""} type="button" onClick={() => onScentView(view)}>
+                  {view}
+                </button>
+              ))}
+            </div>
+            <div className="toggle-grid">
+              {(Object.keys(layerToggles) as (keyof LayerToggles)[]).map((key) => (
+                <label key={key} className="toggle-row">
+                  <input type="checkbox" checked={layerToggles[key]} onChange={() => onLayerToggle(key)} />
+                  <span>{key === "dogPath" ? "dog path" : key === "radius" ? "analysis radius" : key}</span>
+                </label>
+              ))}
+            </div>
+          </section>
+
+          <section className="control-card">
+            <div className="section-title">Building influence</div>
+            <div className="mode-grid">
+              {(["normal", "obstruction", "wake", "shade"] as BuildingMode[]).map((mode) => (
+                <button key={mode} className={settings.buildingMode === mode ? "active" : ""} type="button" onClick={() => onSettings({ buildingMode: mode })}>
+                  {mode}
+                </button>
+              ))}
+            </div>
+            <p className="microcopy">
+              {settings.buildingMode === "obstruction"
+                ? "Buildings strongly block ground scent inside footprints."
+                : settings.buildingMode === "wake"
+                  ? "Building edges create stronger turbulence and scent pockets."
+                  : settings.buildingMode === "shade"
+                    ? "Building shade favors lower, more persistent edge scent."
+                    : "Balanced obstruction, wake, and edge retention."}
+            </p>
+          </section>
+
+          <section className="control-card">
+            <div className="section-title">
+              <Layers size={17} />
+              Environment coverage
+            </div>
+            <div className="environment-readout">
+              <div>
+                <span>Status</span>
+                <strong>{environmentStatus === "loading" ? "refreshing" : environmentStatus === "error" ? "partial" : `${Math.round(environmentCoverage.score * 100)}%`}</strong>
+              </div>
+              <div>
+                <span>Missing</span>
+                <strong>{environmentCoverage.missingLayers.length ? environmentCoverage.missingLayers.length : 0}</strong>
+              </div>
+            </div>
+            <p className="microcopy">{environmentMessage || environmentCoverage.message}</p>
+          </section>
+        </>
+      ) : null}
+
+      {controlTab === "chambers" ? (
+        <>
+          <section className="control-card">
+            <div className="section-title">
+              <Layers size={17} />
+              Chamber stations
+            </div>
+            <button className={`add-chamber-button ${addingChamber ? "active" : ""}`} type="button" onClick={onStartAddChamber}>
+              <Plus size={16} />
+              {addingChamber ? "Place on map" : "Add chamber"}
+            </button>
+            <div className="station-list">
+              {chamberList.map((chamber, index) => {
+                const chamberResult = chamberResultsById.get(chamber.id) as ChamberResult | undefined;
+                const coverageStatus = environmentCoverage.stationStatuses[chamber.id];
+                const twin = chamberTwinsById.get(chamber.id);
+                return (
+                  <div className={`station-row ${selectedChamberId === chamber.id ? "active" : ""}`} key={chamber.id}>
+                    <button className="station-select-button" type="button" onClick={() => onSelectChamber(chamber.id)}>
+                      <strong>{chamber.name}</strong>
+                      <span>
+                        {chamber.road} · vent {Math.round(chamber.ventDirection ?? 0)}deg · leak {Math.round((chamber.leakRate ?? 0.6) * 100)}%
+                      </span>
+                      {twin ? (
+                        <span>
+                          output {Math.round(twin.state.scentOutput * 100)}% · power {Math.round(twin.state.battery * 100)}%
+                        </span>
+                      ) : null}
+                      <span className={`coverage-pill ${stationCoverageClass(coverageStatus)}`}>{stationCoverageLabel(coverageStatus)}</span>
+                    </button>
+                    <div className="station-metrics">
+                      <div>
+                        <span>{stationLabel(index)}</span>
+                        <strong>{Math.round((chamberResult?.coverage ?? chamber.scentStrength) * 100)}%</strong>
+                      </div>
+                      <button className="remove-chamber-button" type="button" onClick={() => onRemoveChamber(chamber.id)} aria-label={`Remove ${chamber.name}`}>
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <ChamberTwinPanel twins={chamberTwins} selectedId={selectedChamberId} />
+        </>
+      ) : null}
+
+      {controlTab === "conditions" ? (
+        <>
+          <section className="control-card">
+            <div className="section-title">
+              <Wind size={17} />
+              Weather field
+            </div>
+            <div className="choice-row">
+              {(["live", "manual"] as WeatherSource[]).map((source) => (
+                <button key={source} className={settings.weatherSource === source ? "active" : ""} type="button" onClick={() => onSettings({ weatherSource: source })}>
+                  {source === "live" ? "Live grid" : "Manual"}
+                </button>
+              ))}
+            </div>
+            <p className="microcopy">
+              {settings.weatherSource === "live"
+                ? weatherStatus === "ready"
+                  ? `${weatherGrid?.source ?? "Weather model"}: ${weatherGrid?.samples.length ?? 0} local samples over ${Math.round(weatherGrid?.sampleRadiusMeters ?? 0)} m.`
+                  : weatherStatus === "loading"
+                    ? "Fetching local wind, gust, temperature, humidity, and precipitation samples."
+                    : "Live weather unavailable; the model falls back to manual sliders."
+                : "Manual mode uses the sliders below as the weather field baseline."}
+            </p>
+            <div className="weather-readout">
+              <div>
+                <span>Temp</span>
+                <strong>{Math.round(field?.weather.temperature ?? settings.temperature)}F</strong>
+              </div>
+              <div>
+                <span>RH</span>
+                <strong>{Math.round(field?.weather.humidity ?? settings.humidity)}%</strong>
+              </div>
+              <div>
+                <span>Rain</span>
+                <strong>{Math.round(((field?.weather.rain ?? settings.rain) || 0) * 100)}%</strong>
+              </div>
+              <div>
+                <span>Gust</span>
+                <strong>{(field?.weather.windGust ?? settings.windSpeed).toFixed(1)} m/s</strong>
+              </div>
+            </div>
+          </section>
+
+          <section className="control-card control-grid">
+            <RangeControl label="Wind bearing" value={settings.windDir} min={0} max={359} step={1} suffix="deg" icon={<Wind size={16} />} onChange={(windDir) => onSettings({ windDir })} />
+            <RangeControl label="Wind speed" value={settings.windSpeed} min={0.4} max={11} step={0.1} suffix=" m/s" icon={<Gauge size={16} />} onChange={(windSpeed) => onSettings({ windSpeed })} />
+            <RangeControl label="Gustiness" value={settings.gustiness} min={0} max={1} step={0.01} icon={<Wind size={16} />} onChange={(gustiness) => onSettings({ gustiness })} />
+            <RangeControl label="Temperature" value={settings.temperature} min={25} max={105} step={1} suffix="F" icon={<ThermometerSun size={16} />} onChange={(temperature) => onSettings({ temperature })} />
+            <RangeControl label="Humidity" value={settings.humidity} min={5} max={100} step={1} suffix="%" icon={<Droplets size={16} />} onChange={(humidity) => onSettings({ humidity })} />
+            <RangeControl label="Rain" value={settings.rain} min={0} max={1} step={0.01} icon={<CloudRain size={16} />} onChange={(rain) => onSettings({ rain })} />
+            <RangeControl label="Sunlight" value={settings.sunlight} min={0} max={1} step={0.01} icon={<ThermometerSun size={16} />} onChange={(sunlight) => onSettings({ sunlight })} />
+            <RangeControl label="Track age" value={settings.trackAge} min={0} max={36} step={0.5} suffix=" h" icon={<Gauge size={16} />} onChange={(trackAge) => onSettings({ trackAge })} />
+            <RangeControl label="Contamination" value={settings.contamination} min={0} max={1} step={0.01} icon={<MapPin size={16} />} onChange={(contamination) => onSettings({ contamination })} />
+            <RangeControl label="Stability" value={settings.stability} min={0} max={1} step={0.01} icon={<Layers size={16} />} onChange={(stability) => onSettings({ stability })} />
+            <RangeControl label="Canopy" value={settings.canopy} min={0} max={1} step={0.01} icon={<Layers size={16} />} onChange={(canopy) => onSettings({ canopy })} />
+            <RangeControl label="Roughness" value={settings.roughness} min={0} max={1} step={0.01} icon={<Layers size={16} />} onChange={(roughness) => onSettings({ roughness })} />
+            <RangeControl label="Drainage" value={settings.drainage} min={0} max={1} step={0.01} icon={<CloudRain size={16} />} onChange={(drainage) => onSettings({ drainage })} />
+            <RangeControl label="Source" value={settings.sourceStrength} min={0.1} max={1} step={0.01} icon={<Gauge size={16} />} onChange={(sourceStrength) => onSettings({ sourceStrength })} />
+            <label className="select-control">
+              <span>Surface</span>
+              <select value={settings.surface} onChange={(event) => onSettings({ surface: event.target.value as Surface })}>
+                <option value="mixed">mixed</option>
+                <option value="grass">grass</option>
+                <option value="forest">forest</option>
+                <option value="soil">soil</option>
+                <option value="pavement">pavement</option>
+              </select>
+            </label>
+          </section>
+        </>
+      ) : null}
+
+      {controlTab === "output" ? (
+        <section className="control-card">
+          <div className="section-title">Signal strength</div>
+          <SignalChart signal={field?.signal ?? []} time={time} />
+          <div className="metrics-grid">
+            <Metric label="Detect" value={(field?.metrics.detectability ?? 0) * 100} />
+            <Metric label="Area" value={(field?.metrics.coverage ?? 0) * 100} />
+            <Metric label="Trail" value={(field?.metrics.continuity ?? 0) * 100} />
+            <Metric label="Uncertain" value={(field?.metrics.uncertainty ?? 0) * 100} />
+            <Metric label="Ground" value={(field?.metrics.groundHold ?? 0) * 100} />
+            <Metric label="Airborne" value={(field?.metrics.airborne ?? 0) * 100} />
+            <Metric label="Drainage" value={(field?.metrics.drainageLoad ?? 0) * 100} />
+            <Metric label="Pockets" value={field?.metrics.pockets ?? 0} suffix="" />
+          </div>
+          <p className="explanation">{field?.explanation}</p>
+          <div className="assumption-list">
+            {(field?.assumptions ?? []).map((assumption) => (
+              <span key={assumption}>{assumption}</span>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function simulationClockLabel(hour: number) {
+  return `Hour ${hour.toFixed(1)} / 24`;
+}
+
+function PlaybackBar({
+  time,
+  playing,
+  speed,
+  onReset,
+  onTime,
+  onPlay,
+  onSpeed,
+}: {
+  time: number;
+  playing: boolean;
+  speed: number;
   onReset: () => void;
   onTime: (value: number) => void;
   onPlay: () => void;
   onSpeed: (value: number) => void;
-  onScentView: (view: ScentView) => void;
-  onLayerToggle: (key: keyof LayerToggles) => void;
 }) {
-  const chamberResultsById = new Map((field?.chambers ?? []).map((chamber) => [chamber.id, chamber]));
-  const chamberList = settings.chambers ?? DEFAULTS.chambers;
-
   return (
-    <div className="controls">
-      <section className="control-card timeline-card">
-        <div className="timeline-row">
-          <button className="icon-button primary" type="button" onClick={onPlay} aria-label={playing ? "Pause" : "Play"}>
-            {playing ? <Pause size={18} /> : <Play size={18} />}
-          </button>
-          <strong className="clock">{hourLabel(time)}</strong>
-          <input className="time-slider" type="range" min="0" max="24" step="0.05" value={time} onChange={(event) => onTime(Number(event.target.value))} />
-          <button className="icon-button" type="button" onClick={onReset} aria-label="Reset">
-            <RotateCcw size={18} />
-          </button>
-        </div>
-        <div className="segmented" aria-label="Playback speed">
-          {[0.5, 1, 2, 4].map((candidate) => (
-            <button key={candidate} className={speed === candidate ? "active" : ""} type="button" onClick={() => onSpeed(candidate)}>
-              {candidate}x
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="control-card">
-        <div className="section-title">
-          <MapPin size={17} />
-          9318 SW 43rd Ln
-        </div>
-        <div className="coordinate-grid">
-          <label>
-            Lat
-            <input value={settings.lat} type="number" step="0.0001" onChange={(event) => onSettings({ lat: Number(event.target.value) })} />
-          </label>
-          <label>
-            Lon
-            <input value={settings.lon} type="number" step="0.0001" onChange={(event) => onSettings({ lon: Number(event.target.value) })} />
-          </label>
-        </div>
-        <div className="choice-row">
-          {[250, 500, 1000].map((radius) => (
-            <button key={radius} className={settings.radius === radius ? "active" : ""} type="button" onClick={() => onSettings({ radius })}>
-              {radius === 1000 ? "1 km" : `${radius} m`}
-            </button>
-          ))}
-        </div>
-        <div className="choice-row">
-          {(["street", "satellite"] as Basemap[]).map((basemap) => (
-            <button key={basemap} className={settings.basemap === basemap ? "active" : ""} type="button" onClick={() => onSettings({ basemap })}>
-              {basemap}
-            </button>
-          ))}
-        </div>
-      </section>
-
-      <section className="control-card">
-        <div className="section-title">
-          <Layers size={17} />
-          Scent chambers
-        </div>
-        <button className={`add-chamber-button ${addingChamber ? "active" : ""}`} type="button" onClick={onStartAddChamber}>
-          <Plus size={16} />
-          {addingChamber ? "Place on map" : "Add chamber"}
+    <div className="map-playback" aria-label="24-hour simulation playback">
+      <div className="playback-main">
+        <button className="icon-button primary" type="button" onClick={onPlay} aria-label={playing ? "Pause 24-hour simulation" : "Play 24-hour simulation"}>
+          {playing ? <Pause size={18} /> : <Play size={18} />}
         </button>
-        <div className="station-list">
-          {chamberList.map((chamber, index) => {
-            const chamberResult = chamberResultsById.get(chamber.id) as ChamberResult | undefined;
-            const coverageStatus = environmentCoverage.stationStatuses[chamber.id];
-            return (
-              <div className="station-row" key={chamber.id}>
-                <div>
-                  <strong>{chamber.name}</strong>
-                  <span>
-                    {chamber.road} · vent {Math.round(chamber.ventDirection ?? 0)}deg · leak {Math.round((chamber.leakRate ?? 0.6) * 100)}%
-                  </span>
-                  <span className={`coverage-pill ${stationCoverageClass(coverageStatus)}`}>{stationCoverageLabel(coverageStatus)}</span>
-                </div>
-                <div className="station-metrics">
-                  <div>
-                    <span>{stationLabel(index)}</span>
-                    <strong>{Math.round((chamberResult?.coverage ?? chamber.scentStrength) * 100)}%</strong>
-                  </div>
-                  <button className="remove-chamber-button" type="button" onClick={() => onRemoveChamber(chamber.id)} aria-label={`Remove ${chamber.name}`}>
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
+        <div className="playback-clock">
+          <span>24-hour simulation clock</span>
+          <strong>{hourLabel(time)}</strong>
+          <em>{simulationClockLabel(time)}</em>
         </div>
-      </section>
-
-      <section className="control-card">
-        <div className="section-title">
-          <Layers size={17} />
-          Analysis layers
-        </div>
-        <div className="mode-grid">
-          {(["combined", "ground", "air", "drainage", "uncertainty"] as ScentView[]).map((view) => (
-            <button key={view} className={scentView === view ? "active" : ""} type="button" onClick={() => onScentView(view)}>
-              {view}
-            </button>
-          ))}
-        </div>
-        <div className="toggle-grid">
-          {(Object.keys(layerToggles) as (keyof LayerToggles)[]).map((key) => (
-            <label key={key} className="toggle-row">
-              <input type="checkbox" checked={layerToggles[key]} onChange={() => onLayerToggle(key)} />
-              <span>{key === "dogPath" ? "dog path" : key === "radius" ? "analysis radius" : key}</span>
-            </label>
-          ))}
-        </div>
-      </section>
-
-      <section className="control-card">
-        <div className="section-title">Building influence</div>
-        <div className="mode-grid">
-          {(["normal", "obstruction", "wake", "shade"] as BuildingMode[]).map((mode) => (
-            <button key={mode} className={settings.buildingMode === mode ? "active" : ""} type="button" onClick={() => onSettings({ buildingMode: mode })}>
-              {mode}
-            </button>
-          ))}
-        </div>
-        <p className="microcopy">
-          {settings.buildingMode === "obstruction"
-            ? "Buildings strongly block ground scent inside footprints."
-            : settings.buildingMode === "wake"
-              ? "Building edges create stronger turbulence and scent pockets."
-              : settings.buildingMode === "shade"
-                ? "Building shade favors lower, more persistent edge scent."
-                : "Balanced obstruction, wake, and edge retention."}
-        </p>
-      </section>
-
-      <section className="control-card">
-        <div className="section-title">
-          <Layers size={17} />
-          Environment coverage
-        </div>
-        <div className="environment-readout">
-          <div>
-            <span>Status</span>
-            <strong>{environmentStatus === "loading" ? "refreshing" : environmentStatus === "error" ? "partial" : `${Math.round(environmentCoverage.score * 100)}%`}</strong>
-          </div>
-          <div>
-            <span>Missing</span>
-            <strong>{environmentCoverage.missingLayers.length ? environmentCoverage.missingLayers.length : 0}</strong>
+        <div className="playback-track">
+          <input className="time-slider" aria-label="Simulation hour in 24-hour model" type="range" min="0" max="24" step="0.05" value={time} onChange={(event) => onTime(Number(event.target.value))} />
+          <div className="playback-ticks" aria-hidden="true">
+            <span>00</span>
+            <span>06</span>
+            <span>12</span>
+            <span>18</span>
+            <span>24</span>
           </div>
         </div>
-        <p className="microcopy">
-          {environmentMessage || environmentCoverage.message}
-        </p>
-      </section>
-
-      <section className="control-card">
-        <div className="section-title">
-          <Wind size={17} />
-          Weather field
-        </div>
-        <div className="choice-row">
-          {(["live", "manual"] as WeatherSource[]).map((source) => (
-            <button key={source} className={settings.weatherSource === source ? "active" : ""} type="button" onClick={() => onSettings({ weatherSource: source })}>
-              {source === "live" ? "Live grid" : "Manual"}
-            </button>
-          ))}
-        </div>
-        <p className="microcopy">
-          {settings.weatherSource === "live"
-            ? weatherStatus === "ready"
-              ? `${weatherGrid?.source ?? "Weather model"}: ${weatherGrid?.samples.length ?? 0} local samples over ${Math.round(weatherGrid?.sampleRadiusMeters ?? 0)} m.`
-              : weatherStatus === "loading"
-                ? "Fetching local wind, gust, temperature, humidity, and precipitation samples."
-                : "Live weather unavailable; the model falls back to manual sliders."
-            : "Manual mode uses the sliders below as the weather field baseline."}
-        </p>
-        <div className="weather-readout">
-          <div>
-            <span>Temp</span>
-            <strong>{Math.round(field?.weather.temperature ?? settings.temperature)}F</strong>
-          </div>
-          <div>
-            <span>RH</span>
-            <strong>{Math.round(field?.weather.humidity ?? settings.humidity)}%</strong>
-          </div>
-          <div>
-            <span>Rain</span>
-            <strong>{Math.round(((field?.weather.rain ?? settings.rain) || 0) * 100)}%</strong>
-          </div>
-          <div>
-            <span>Gust</span>
-            <strong>{(field?.weather.windGust ?? settings.windSpeed).toFixed(1)} m/s</strong>
-          </div>
-        </div>
-      </section>
-
-      <section className="control-card control-grid">
-        <RangeControl label="Wind bearing" value={settings.windDir} min={0} max={359} step={1} suffix="deg" icon={<Wind size={16} />} onChange={(windDir) => onSettings({ windDir })} />
-        <RangeControl label="Wind speed" value={settings.windSpeed} min={0.4} max={11} step={0.1} suffix=" m/s" icon={<Gauge size={16} />} onChange={(windSpeed) => onSettings({ windSpeed })} />
-        <RangeControl label="Gustiness" value={settings.gustiness} min={0} max={1} step={0.01} icon={<Wind size={16} />} onChange={(gustiness) => onSettings({ gustiness })} />
-        <RangeControl label="Temperature" value={settings.temperature} min={25} max={105} step={1} suffix="F" icon={<ThermometerSun size={16} />} onChange={(temperature) => onSettings({ temperature })} />
-        <RangeControl label="Humidity" value={settings.humidity} min={5} max={100} step={1} suffix="%" icon={<Droplets size={16} />} onChange={(humidity) => onSettings({ humidity })} />
-        <RangeControl label="Rain" value={settings.rain} min={0} max={1} step={0.01} icon={<CloudRain size={16} />} onChange={(rain) => onSettings({ rain })} />
-        <RangeControl label="Sunlight" value={settings.sunlight} min={0} max={1} step={0.01} icon={<ThermometerSun size={16} />} onChange={(sunlight) => onSettings({ sunlight })} />
-        <RangeControl label="Track age" value={settings.trackAge} min={0} max={36} step={0.5} suffix=" h" icon={<Gauge size={16} />} onChange={(trackAge) => onSettings({ trackAge })} />
-        <RangeControl label="Contamination" value={settings.contamination} min={0} max={1} step={0.01} icon={<MapPin size={16} />} onChange={(contamination) => onSettings({ contamination })} />
-        <RangeControl label="Stability" value={settings.stability} min={0} max={1} step={0.01} icon={<Layers size={16} />} onChange={(stability) => onSettings({ stability })} />
-        <RangeControl label="Canopy" value={settings.canopy} min={0} max={1} step={0.01} icon={<Layers size={16} />} onChange={(canopy) => onSettings({ canopy })} />
-        <RangeControl label="Roughness" value={settings.roughness} min={0} max={1} step={0.01} icon={<Layers size={16} />} onChange={(roughness) => onSettings({ roughness })} />
-        <RangeControl label="Drainage" value={settings.drainage} min={0} max={1} step={0.01} icon={<CloudRain size={16} />} onChange={(drainage) => onSettings({ drainage })} />
-        <RangeControl label="Source" value={settings.sourceStrength} min={0.1} max={1} step={0.01} icon={<Gauge size={16} />} onChange={(sourceStrength) => onSettings({ sourceStrength })} />
-        <label className="select-control">
-          <span>Surface</span>
-          <select value={settings.surface} onChange={(event) => onSettings({ surface: event.target.value as Surface })}>
-            <option value="mixed">mixed</option>
-            <option value="grass">grass</option>
-            <option value="forest">forest</option>
-            <option value="soil">soil</option>
-            <option value="pavement">pavement</option>
-          </select>
-        </label>
-      </section>
-
-      <section className="control-card">
-        <div className="section-title">Signal strength</div>
-        <SignalChart signal={field?.signal ?? []} time={time} />
-        <div className="metrics-grid">
-          <Metric label="Detect" value={(field?.metrics.detectability ?? 0) * 100} />
-          <Metric label="Area" value={(field?.metrics.coverage ?? 0) * 100} />
-          <Metric label="Trail" value={(field?.metrics.continuity ?? 0) * 100} />
-          <Metric label="Uncertain" value={(field?.metrics.uncertainty ?? 0) * 100} />
-          <Metric label="Ground" value={(field?.metrics.groundHold ?? 0) * 100} />
-          <Metric label="Airborne" value={(field?.metrics.airborne ?? 0) * 100} />
-          <Metric label="Drainage" value={(field?.metrics.drainageLoad ?? 0) * 100} />
-          <Metric label="Pockets" value={field?.metrics.pockets ?? 0} suffix="" />
-        </div>
-        <p className="explanation">{field?.explanation}</p>
-        <div className="assumption-list">
-          {(field?.assumptions ?? []).map((assumption) => (
-            <span key={assumption}>{assumption}</span>
-          ))}
-        </div>
-      </section>
+        <button className="icon-button" type="button" onClick={onReset} aria-label="Reset simulation">
+          <RotateCcw size={18} />
+        </button>
+      </div>
+      <div className="speed-row" aria-label="Playback speed">
+        <span>Speed</span>
+        {[0.5, 1, 2, 4].map((candidate) => (
+          <button key={candidate} className={speed === candidate ? "active" : ""} type="button" onClick={() => onSpeed(candidate)}>
+            {candidate}x
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1228,6 +1288,7 @@ export default function Home() {
   const [weatherStatus, setWeatherStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [scentView, setScentView] = useState<ScentView>("combined");
   const [addingChamber, setAddingChamber] = useState(false);
+  const [selectedChamberId, setSelectedChamberId] = useState<string | null>(DEFAULTS.chambers[0]?.id ?? null);
   const [layerToggles, setLayerToggles] = useState<LayerToggles>({
     odor: true,
     uncertainty: true,
@@ -1242,6 +1303,33 @@ export default function Home() {
   });
   const activeChambers = settings.chambers ?? DEFAULTS.chambers;
   const environmentCoverage = useMemo(() => evaluateEnvironmentCoverage(environment, settings, activeChambers), [activeChambers, environment, settings]);
+  const chamberTwins = useMemo(() => {
+    const coverageById = new Map((field?.chambers ?? []).map((chamber) => [chamber.id, chamber.coverage]));
+    return buildChamberTwins({
+      chambers: activeChambers,
+      time,
+      coverageById,
+      coverageStatusById: environmentCoverage.stationStatuses,
+      weather: {
+        temperature: field?.weather.temperature ?? settings.temperature,
+        humidity: field?.weather.humidity ?? settings.humidity,
+        rain: field?.weather.rain ?? settings.rain,
+        windSpeed: field?.weather.windSpeed ?? settings.windSpeed,
+        windDir: field?.weather.windDir ?? settings.windDir,
+      },
+    });
+  }, [
+    activeChambers,
+    environmentCoverage.stationStatuses,
+    field?.chambers,
+    field?.weather,
+    settings.humidity,
+    settings.rain,
+    settings.temperature,
+    settings.windDir,
+    settings.windSpeed,
+    time,
+  ]);
   const simulationTime = useMemo(() => Math.round(time * 10) / 10, [time]);
   const modelSettings = useMemo(
     () => ({
@@ -1257,37 +1345,25 @@ export default function Home() {
   }, []);
 
   const addChamberAt = useCallback((lon: number, lat: number) => {
+    const chamber = createPlacedChamber({ index: activeChambers.length, lat, lon, windDir: settings.windDir, trackAge: settings.trackAge });
     setSettings((current) => {
       const chambers = current.chambers ?? DEFAULTS.chambers;
-      const index = chambers.length;
-      const chamber: ScentChamber = {
-        id: `custom-${Date.now()}-${index}`,
-        name: stationName(index),
-        road: "Custom chamber",
-        lat,
-        lon,
-        scentStrength: 0.72,
-        foodStrength: 0.36,
-        ventHeight: 0.72,
-        ventDirection: current.windDir,
-        leakRate: 0.62,
-        itemAge: current.trackAge,
-        rechargeHours: 24,
-        detectionRadius: 40,
-        active: true,
-      };
       return { ...current, chambers: [...chambers, chamber] };
     });
+    setSelectedChamberId(chamber.id);
     setLayerToggles((current) => ({ ...current, chambers: true }));
     setAddingChamber(false);
-  }, []);
+  }, [activeChambers.length, settings.trackAge, settings.windDir]);
 
   const removeChamber = useCallback((id: string) => {
+    if (selectedChamberId === id) {
+      setSelectedChamberId(activeChambers.find((chamber) => chamber.id !== id)?.id ?? null);
+    }
     setSettings((current) => {
       const chambers = current.chambers ?? DEFAULTS.chambers;
       return { ...current, chambers: chambers.filter((chamber) => chamber.id !== id) };
     });
-  }, []);
+  }, [activeChambers, selectedChamberId]);
 
   const reset = useCallback(() => {
     setSettings(DEFAULTS);
@@ -1298,6 +1374,7 @@ export default function Home() {
     setWeatherStatus("idle");
     setScentView("combined");
     setAddingChamber(false);
+    setSelectedChamberId(DEFAULTS.chambers[0]?.id ?? null);
     setLayerToggles({
       odor: true,
       uncertainty: true,
@@ -1326,11 +1403,12 @@ export default function Home() {
 
   useEffect(() => {
     if (settings.weatherSource !== "live") {
-      setWeatherStatus("idle");
       return;
     }
     const controller = new AbortController();
-    setWeatherStatus("loading");
+    queueMicrotask(() => {
+      if (!controller.signal.aborted) setWeatherStatus("loading");
+    });
     fetchWeatherGrid(settings, controller.signal)
       .then((grid) => {
         setWeatherGrid(grid);
@@ -1568,18 +1646,28 @@ export default function Home() {
 
   const indicators = useMemo<MapIndicator[]>(() => {
     const chamberResultsById = new Map((field?.chambers ?? []).map((chamber) => [chamber.id, chamber]));
+    const chamberTwinsById = new Map(chamberTwins.map((twin) => [twin.chamber.id, twin]));
     const chamberData = activeChambers.map((chamber) => ({ ...chamber, coverage: chamberResultsById.get(chamber.id)?.coverage }));
-    const chamberIndicators = chamberData.map((chamber, index) => ({
-      id: chamber.id,
-      label: stationLabel(index),
-      title: `${chamber.name} - ${chamber.road}`,
-      detail: `Scent chamber beacon. Scent ${Math.round(chamber.scentStrength * 100)}%, food ${Math.round(chamber.foodStrength * 100)}%, vent ${Math.round(chamber.ventDirection ?? 0)} deg, leak ${Math.round((chamber.leakRate ?? 0.6) * 100)}%, item age ${Math.round(chamber.itemAge ?? 0)} h, recharge ${Math.round(chamber.rechargeHours ?? 24)} h, PIR radius ${chamber.detectionRadius} m, modeled coverage ${Math.round(((chamber as ChamberResult).coverage ?? 0) * 100)}%.`,
-      lon: chamber.lon,
-      lat: chamber.lat,
-      radius: 15 + chamber.scentStrength * 12,
-      elevation: 38 + chamber.scentStrength * 42,
-      color: [47, 125, 119, 235] as [number, number, number, number],
-    }));
+    const chamberIndicators = chamberData.map((chamber, index) => {
+      const twin = chamberTwinsById.get(chamber.id);
+      const statusPrefix = twin ? `Twin ${twin.state.status}; output ${Math.round(twin.state.scentOutput * 100)}%, battery ${Math.round(twin.state.battery * 100)}%, contamination ${Math.round(twin.state.contaminationRisk * 100)}%. ` : "";
+      return {
+        id: chamber.id,
+        label: stationLabel(index),
+        title: `${chamber.name} - ${chamber.road}`,
+        detail: `${statusPrefix}Scent chamber beacon. Scent ${Math.round(chamber.scentStrength * 100)}%, food ${Math.round(chamber.foodStrength * 100)}%, vent ${Math.round(chamber.ventDirection ?? 0)} deg, leak ${Math.round((chamber.leakRate ?? 0.6) * 100)}%, item age ${Math.round(chamber.itemAge ?? 0)} h, recharge ${Math.round(chamber.rechargeHours ?? 24)} h, PIR radius ${chamber.detectionRadius} m, modeled coverage ${Math.round(((chamber as ChamberResult).coverage ?? 0) * 100)}%.`,
+        lon: chamber.lon,
+        lat: chamber.lat,
+        radius: 15 + chamber.scentStrength * 12,
+        elevation: 38 + chamber.scentStrength * 42,
+        color:
+          twin?.state.status === "watch"
+            ? ([242, 184, 75, 235] as [number, number, number, number])
+            : twin?.state.status === "low-output" || twin?.state.status === "offline"
+              ? ([126, 95, 86, 235] as [number, number, number, number])
+              : ([47, 125, 119, 235] as [number, number, number, number]),
+      };
+    });
 
     return [
       {
@@ -1595,7 +1683,7 @@ export default function Home() {
       },
       ...chamberIndicators,
     ];
-  }, [activeChambers, field?.chambers, settings.lat, settings.lon, settings.radius]);
+  }, [activeChambers, chamberTwins, field?.chambers, settings.lat, settings.lon, settings.radius]);
 
   useEffect(() => {
     if (!overlayRef.current || !field) return;
@@ -1876,7 +1964,7 @@ export default function Home() {
         {addingChamber && <div className="map-placement-banner">Click map to place chamber</div>}
         <div className="map-status">
           <div>
-            <span>Odor field</span>
+            <span>Model clock</span>
             <strong>{hourLabel(time)}</strong>
           </div>
           <div>
@@ -1896,19 +1984,13 @@ export default function Home() {
             </strong>
           </div>
         </div>
+        <PlaybackBar time={time} playing={playing} speed={speed} onReset={reset} onTime={setTime} onPlay={() => setPlaying((current) => !current)} onSpeed={setSpeed} />
       </section>
 
       <aside className="desktop-panel">
-        <header className="app-header">
-          <p>Scent simulation</p>
-          <h1>Geographic odor field</h1>
-        </header>
         <ControlPanel
           settings={settings}
           field={field}
-          time={time}
-          playing={playing}
-          speed={speed}
           scentView={scentView}
           layerToggles={layerToggles}
           weatherGrid={weatherGrid}
@@ -1917,13 +1999,12 @@ export default function Home() {
           environmentStatus={environmentStatus}
           environmentMessage={environmentMessage}
           addingChamber={addingChamber}
+          chamberTwins={chamberTwins}
+          selectedChamberId={selectedChamberId}
           onSettings={onSettings}
           onStartAddChamber={() => setAddingChamber((current) => !current)}
+          onSelectChamber={setSelectedChamberId}
           onRemoveChamber={removeChamber}
-          onReset={reset}
-          onTime={setTime}
-          onPlay={() => setPlaying((current) => !current)}
-          onSpeed={setSpeed}
           onScentView={setScentView}
           onLayerToggle={toggleLayer}
         />
@@ -1954,9 +2035,6 @@ export default function Home() {
         <ControlPanel
           settings={settings}
           field={field}
-          time={time}
-          playing={playing}
-          speed={speed}
           scentView={scentView}
           layerToggles={layerToggles}
           weatherGrid={weatherGrid}
@@ -1965,13 +2043,12 @@ export default function Home() {
           environmentStatus={environmentStatus}
           environmentMessage={environmentMessage}
           addingChamber={addingChamber}
+          chamberTwins={chamberTwins}
+          selectedChamberId={selectedChamberId}
           onSettings={onSettings}
           onStartAddChamber={() => setAddingChamber((current) => !current)}
+          onSelectChamber={setSelectedChamberId}
           onRemoveChamber={removeChamber}
-          onReset={reset}
-          onTime={setTime}
-          onPlay={() => setPlaying((current) => !current)}
-          onSpeed={setSpeed}
           onScentView={setScentView}
           onLayerToggle={toggleLayer}
         />
